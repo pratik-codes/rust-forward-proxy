@@ -105,8 +105,8 @@ pub fn log_transaction(log_entry: &ProxyLog) -> Result<()> {
     let log_message = serde_json::to_string_pretty(log_entry)?;
     let formatted_message = format!("[{}] TRANSACTION:\n{}", timestamp, log_message);
     
-    // Log using log (automatically bridged to tracing)
-    info!("{}", formatted_message);
+    // Log using debug level so it only appears in debug mode
+    debug!("{}", formatted_message);
     
     Ok(())
 }

@@ -2,7 +2,7 @@
 
 use crate::models::{ProxyLog, RequestData, ResponseData};
 use crate::{log_info, log_error, log_debug, log_proxy_transaction};
-use crate::utils::{is_hop_by_hop_header, parse_url, extract_path, extract_query, is_https, parse_cookies, parse_form_data};
+use crate::utils::{is_hop_by_hop_header, parse_url, extract_path, extract_query, is_https, parse_connect_target, build_error_response, extract_headers, extract_cookies_to_request_data, should_extract_body, extract_body, build_forwarding_request, log_incoming_request, log_connect_request, log_connect_success, log_connect_failure, create_connect_transaction, log_http_success, log_http_failure, log_forwarding_request};
 use anyhow::Result;
 use hyper::Client;
 use hyper::service::{make_service_fn, service_fn};
@@ -11,6 +11,9 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 use tracing::{error, info};
+use hyper::upgrade::{Upgraded, on};
+use futures::future::try_join;
+
 
 pub struct ProxyServer {
     listen_addr: SocketAddr,
@@ -59,24 +62,13 @@ async fn handle_request(
     remote_addr: SocketAddr,
 ) -> Result<Response<Body>, Infallible> {
     let start_time = std::time::Instant::now();
-
-    // Extract basic request information
     let method = req.method().to_string();
     let uri = req.uri().to_string();
 
-    info!(
-        "Received {} request to {} from {}",
-        method,
-        uri,
-        remote_addr.ip()
-    );
-    
-    // Log request
-    log_info!("Received {} request to {} from {}", method, uri, remote_addr.ip());
-    log_debug!("Request details: method={}, uri={}, remote_addr={}, headers_count={}", 
-               method, uri, remote_addr, req.headers().len());
+    // Log incoming request
+    log_incoming_request(&method, &uri, &remote_addr);
 
-    // Create our data structure
+    // Create request data structure
     let mut request_data = RequestData::new(
         method.clone(),
         uri.clone(),
@@ -87,10 +79,152 @@ async fn handle_request(
     log_debug!("Created request data: client_ip={}, client_port={}", 
                request_data.client_ip, request_data.client_port);
     
-    // For proxy requests, we need to extract the actual target URL
-    // The URI field contains the full URL when using a proxy
-    if let Ok(parsed_uri) = parse_url(&uri) {
-        request_data.url = uri.clone();
+    // Special handling for CONNECT requests - don't intercept, just tunnel
+    if method == "CONNECT" {
+        return handle_connect_request(req, request_data, start_time).await;
+    } else {
+        // Extract and process regular HTTP request data
+        extract_request_data(&mut request_data, &uri, req).await;
+        
+        // Handle regular HTTP requests with full interception
+        handle_http_request(request_data, method, start_time).await
+    }
+}
+
+/// Handle CONNECT tunnel with proper upgrade mechanism
+async fn handle_connect_tunnel(
+    req: Request<Body>,
+    upstream_stream: TcpStream,
+    host: &str,
+    port: u16,
+) -> Result<Response<Body>, Infallible> {
+    log_debug!("Setting up CONNECT tunnel for {}:{}", host, port);
+    
+    // Create a response that signals the tunnel is ready
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap();
+    
+    // Clone the host and port for the async block
+    let host_clone = host.to_string();
+    let port_clone = port;
+    
+    // Spawn a task to handle the actual data tunneling
+    tokio::spawn(async move {
+        // Wait for the connection to be upgraded
+        match on(req).await {
+            Ok(upgraded) => {
+                log_debug!("CONNECT tunnel upgraded successfully for {}:{}", host_clone, port_clone);
+                
+                // Start bidirectional data copying
+                if let Err(e) = tunnel_bidirectional(upgraded, upstream_stream).await {
+                    info!("🔌 Tunnel closed for {}:{}: {}", host_clone, port_clone, e);
+                    log_debug!("🔌 TUNNEL CLOSED:\n  Target: {}:{}\n  Reason: {}", host_clone, port_clone, e);
+                } else {
+                    info!("🔌 Tunnel completed for {}:{}", host_clone, port_clone);
+                    log_debug!("🔌 TUNNEL COMPLETED:\n  Target: {}:{}\n  Clean closure", host_clone, port_clone);
+                }
+            }
+            Err(e) => {
+                log_error!("Failed to upgrade CONNECT tunnel for {}:{}: {}", host_clone, port_clone, e);
+            }
+        }
+    });
+    
+    Ok(response)
+}
+
+/// Perform bidirectional data copying between client and upstream
+async fn tunnel_bidirectional(
+    client: Upgraded, 
+    mut upstream: TcpStream
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (mut client_read, mut client_write) = tokio::io::split(client);
+    let (mut upstream_read, mut upstream_write) = upstream.split();
+    
+    // Create bidirectional copying tasks
+    let client_to_upstream = async {
+        tokio::io::copy(&mut client_read, &mut upstream_write).await?;
+        Ok::<_, std::io::Error>(())
+    };
+    
+    let upstream_to_client = async {
+        tokio::io::copy(&mut upstream_read, &mut client_write).await?;
+        Ok::<_, std::io::Error>(())
+    };
+    
+    // Run both directions concurrently
+    try_join(client_to_upstream, upstream_to_client).await?;
+    
+    Ok(())
+}
+
+// ============================================================================
+// MAIN HANDLER FUNCTIONS
+// ============================================================================
+
+/// Handle CONNECT request for HTTPS tunneling
+async fn handle_connect_request(
+    req: Request<Body>,
+    mut request_data: RequestData,
+    start_time: std::time::Instant,
+) -> Result<Response<Body>, Infallible> {
+    log_connect_request(&request_data.url);
+    
+    // Configure request data for CONNECT
+    request_data.path = "".to_string(); // CONNECT doesn't have a path
+    request_data.query_string = None; // CONNECT doesn't have query params
+    request_data.is_https = true; // CONNECT is always for HTTPS
+    
+    // Parse host:port format
+    let (host, port) = match parse_connect_target(&request_data.url) {
+        Ok((h, p)) => (h, p),
+        Err(error_msg) => {
+            log_error!("{}", error_msg);
+            return Ok(build_error_response(StatusCode::BAD_REQUEST, "Invalid CONNECT target"));
+        }
+    };
+    
+    log_debug!("CONNECT tunneling to {}:{}", host, port);
+    
+    // Attempt to establish connection to target
+    match TcpStream::connect(format!("{}:{}", host, port)).await {
+        Ok(upstream_stream) => {
+            let connect_time = start_time.elapsed().as_millis();
+            log_connect_success(&host, port, connect_time);
+            
+            // Create response data and log transaction
+            let response_data = ResponseData::new(
+                200,
+                "OK".to_string(),
+                "tunnel".to_string(),
+                vec![],
+                connect_time as u64,
+            );
+            
+            create_connect_transaction(&request_data, Some(response_data), None);
+            
+            // Handle the upgrade and tunnel the data
+            handle_connect_tunnel(req, upstream_stream, &host, port).await
+        },
+        Err(e) => {
+            let connect_time = start_time.elapsed().as_millis();
+            let error_msg = format!("Failed to connect to {}:{}: {}", host, port, e);
+            
+            log_connect_failure(&host, port, connect_time, &error_msg);
+            create_connect_transaction(&request_data, None, Some(error_msg));
+            
+            Ok(build_error_response(StatusCode::BAD_GATEWAY, "CONNECT failed"))
+        }
+    }
+}
+
+/// Extract and process HTTP request data
+async fn extract_request_data(request_data: &mut RequestData, uri: &str, req: Request<Body>) {
+    // Parse URL for regular HTTP requests
+    if let Ok(parsed_uri) = parse_url(uri) {
+        request_data.url = uri.to_string();
         request_data.path = extract_path(&parsed_uri);
         request_data.query_string = extract_query(&parsed_uri);
         request_data.is_https = is_https(&parsed_uri);
@@ -103,107 +237,41 @@ async fn handle_request(
         log_debug!("Failed to parse URI: {}", uri);
     }
 
-    // Extract headers
-    let mut header_count = 0;
-    for (name, value) in req.headers() {
-        if let Ok(value_str) = value.to_str() {
-            request_data
-                .headers
-                .insert(name.to_string().to_lowercase(), value_str.to_string());
-            header_count += 1;
-        }
-    }
-    log_debug!("Extracted {} headers from request", header_count);
-
-    // Extract cookies
-    if let Some(cookie_header) = req.headers().get("cookie") {
-        if let Ok(cookie_str) = cookie_header.to_str() {
-            request_data.cookies = parse_cookies(cookie_str);
-            log_debug!("Extracted {} cookies from request", request_data.cookies.len());
-        }
-    } else {
-        log_debug!("No cookies found in request");
-    }
-
-    // Extract request body and form data if present
-    let should_extract_body = if let Some(content_type) = req.headers().get("content-type") {
-        if let Ok(content_type_str) = content_type.to_str() {
-            request_data.content_type = Some(content_type_str.to_string());
-            log_debug!("Request content-type: {}", content_type_str);
-            
-            // Check if content type suggests a body
-            content_type_str.contains("application/x-www-form-urlencoded") ||
-            content_type_str.contains("application/json") ||
-            content_type_str.contains("text/") ||
-            content_type_str.contains("multipart/")
-        } else {
-            false
-        }
-    } else {
-        log_debug!("No content-type header found");
-        // For requests without content-type, extract body if method suggests it
-        request_data.method == "POST" || request_data.method == "PUT" || request_data.method == "PATCH"
-    };
+    // Extract various parts of the request
+    extract_headers(req.headers(), request_data);
+    extract_cookies_to_request_data(req.headers(), request_data);
     
     // Extract body if needed
-    if should_extract_body {
-        log_debug!("Extracting request body");
-        let body_bytes = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
-        request_data.body = body_bytes.to_vec();
-        log_debug!("Body extracted, size: {} bytes", request_data.body.len());
-        
-        // Parse form data only for form-encoded content
-        if let Some(content_type) = &request_data.content_type {
-            if content_type.contains("application/x-www-form-urlencoded") {
-                request_data.form_data = parse_form_data(&body_bytes);
-                log_debug!("Extracted {} form fields", request_data.form_data.len());
-            }
-        }
+    let (should_extract, content_type) = should_extract_body(req.headers(), &request_data.method);
+    if let Some(ct) = content_type {
+        request_data.content_type = Some(ct);
+    }
+    if should_extract {
+        extract_body(req.into_body(), request_data).await;
     }
 
-    // Handle the request based on method
-    log_debug!("Starting request processing, elapsed time: {}ms", start_time.elapsed().as_millis());
+    // DEBUG: Log full request data structure
+    log_debug!("📋 REQUEST DATA:\n{:#?}", request_data);
+}
+
+/// Handle regular HTTP request
+async fn handle_http_request(
+    mut request_data: RequestData,
+    method: String,
+    start_time: std::time::Instant,
+) -> Result<Response<Body>, Infallible> {
+    log_debug!("🔍 Processing HTTP request with full interception");
     
-    match request_data.method.as_str() {
-        "CONNECT" => {
-            log_debug!("Handling CONNECT request for HTTPS tunneling");
-            match handle_connect_request(&mut request_data).await {
-                Ok(response) => {
-                    let total_time = start_time.elapsed().as_millis();
-                    log_debug!("CONNECT request processed successfully in {}ms, status: {}", 
-                              total_time, response.status());
-                    Ok(response)
-                },
-                Err(e) => {
-                    let total_time = start_time.elapsed().as_millis();
-                    error!("Failed to handle CONNECT request: {}", e);
-                    log_error!("CONNECT request failed after {}ms: {}", total_time, e);
-                    Ok(Response::builder()
-                        .status(StatusCode::BAD_GATEWAY)
-                        .body(Body::from("CONNECT failed"))
-                        .unwrap())
-                }
-            }
-        },
-        _ => {
-            log_debug!("Handling regular HTTP request");
             match handle_regular_request(&mut request_data).await {
                 Ok(response) => {
                     let total_time = start_time.elapsed().as_millis();
-                    log_debug!("Request processed successfully in {}ms, status: {}", 
-                              total_time, response.status());
+            log_http_success(&method, &request_data.path, response.status(), total_time);
                     Ok(response)
                 },
                 Err(e) => {
                     let total_time = start_time.elapsed().as_millis();
-                    error!("Failed to handle request: {}", e);
-                    log_error!("Request failed after {}ms: {}", total_time, e);
-                    Ok(Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Internal Server Error"))
-                        .unwrap())
-                }
-            }
+            log_http_failure(&method, &request_data.path, total_time, &e);
+            Ok(build_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"))
         }
     }
 }
@@ -212,37 +280,15 @@ async fn handle_request(
 async fn handle_regular_request(request_data: &mut RequestData) -> Result<Response<Body>> {
     let forward_start = std::time::Instant::now();
     
-    log_debug!("Building forward request: {} {}", request_data.method, request_data.url);
+    log_forwarding_request(request_data);
     
-    // Create HTTP client
+    // Create HTTP client and build request
     let client = Client::new();
-
-    // Build the request
-    let mut request_builder = Request::builder()
-        .method(request_data.method.as_str())
-        .uri(&request_data.url);
-
-    // Add headers (excluding hop-by-hop headers)
-    let mut forwarded_headers = 0;
-    let mut skipped_headers = 0;
-    for (name, value) in &request_data.headers {
-        if !is_hop_by_hop_header(name) {
-            request_builder = request_builder.header(name, value);
-            forwarded_headers += 1;
-        } else {
-            skipped_headers += 1;
-        }
-    }
-    log_debug!("Header forwarding: {} forwarded, {} skipped (hop-by-hop)", 
-               forwarded_headers, skipped_headers);
-
-    // Build the request
-    let request = request_builder.body(Body::from(request_data.body.clone()))?;
-    log_debug!("Forward request built, body size: {} bytes", request_data.body.len());
-
-    // Forward the request
-    log_debug!("Sending request to upstream server");
+    let request = build_forwarding_request(request_data)?;
+    
+    // Forward the request to upstream
     let upstream_start = std::time::Instant::now();
+    log_debug!("Sending request to upstream server");
     match client.request(request).await {
         Ok(response) => {
             let upstream_time = upstream_start.elapsed().as_millis();
@@ -255,8 +301,12 @@ async fn handle_regular_request(request_data: &mut RequestData) -> Result<Respon
                 .unwrap_or("")
                 .to_string();
                 
-            log_debug!("Upstream response received in {}ms: {} {} (content-type: {})", 
-                      upstream_time, status_code, status_text, content_type);
+            // Clean INFO log for upstream response
+            info!("📤 Upstream response: {} ({}ms)", status_code, upstream_time);
+                
+            // Verbose DEBUG log
+            log_debug!("📤 UPSTREAM RESPONSE:\n  Status: {} {}\n  Content-Type: {}\n  Time: {}ms", 
+                      status_code, status_text, content_type, upstream_time);
 
             // Extract headers before consuming the response
             let mut response_headers = Vec::new();
@@ -291,11 +341,11 @@ async fn handle_regular_request(request_data: &mut RequestData) -> Result<Respon
                 error: None,
             };
 
-            // Log transaction
+            // DEBUG: Log full transaction details
+            log_debug!("📋 HTTP TRANSACTION:\n{:#?}", log_entry);
+            
+            // Log transaction to file
             log_proxy_transaction!(&log_entry);
-            log_debug!("Transaction logged: request_size={} bytes, response_size={} bytes, total_time={}ms", 
-                      request_data.body.len(), response_data.body.len(), 
-                      forward_start.elapsed().as_millis());
 
             // Build response to send back to client
             let mut response_builder = Response::builder().status(response_data.status_code);
@@ -321,9 +371,12 @@ async fn handle_regular_request(request_data: &mut RequestData) -> Result<Respon
             let upstream_time = upstream_start.elapsed().as_millis();
             let total_time = forward_start.elapsed().as_millis();
             
-            error!("Failed to forward request: {}", e);
-            log_error!("Upstream request failed after {}ms (upstream: {}ms): {}", 
-                      total_time, upstream_time, e);
+            // Clean INFO log for upstream error
+            info!("❌ Upstream failed ({}ms): {}", total_time, e);
+            
+            // Verbose DEBUG log
+            log_debug!("❌ UPSTREAM ERROR:\n  Error: {}\n  Upstream Time: {}ms\n  Total Time: {}ms", 
+                      e, upstream_time, total_time);
 
             let log_entry = ProxyLog {
                 request: request_data.clone(),
@@ -331,101 +384,17 @@ async fn handle_regular_request(request_data: &mut RequestData) -> Result<Respon
                 error: Some(e.to_string()),
             };
 
-            // Log the error
+            // DEBUG: Log full error transaction
+            log_debug!("📋 HTTP ERROR TRANSACTION:\n{:#?}", log_entry);
+            
+            // Log the error to file
             log_proxy_transaction!(&log_entry);
-            log_debug!("Error transaction logged: request_size={} bytes, total_time={}ms", 
-                      request_data.body.len(), total_time);
 
             Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .header("Content-Type", "text/plain")
                 .body(Body::from(format!("Proxy Error: {}", e)))
                 .unwrap())
-        }
-    }
-}
-
-/// Handle CONNECT request for HTTPS tunneling
-async fn handle_connect_request(request_data: &mut RequestData) -> Result<Response<Body>> {
-    let connect_start = std::time::Instant::now();
-    
-    // Extract target host and port from the URI
-    let target = &request_data.url;
-    log_debug!("CONNECT target: {}", target);
-    
-    // Parse host:port format
-    let parts: Vec<&str> = target.split(':').collect();
-    if parts.len() != 2 {
-        let error_msg = format!("Invalid CONNECT target format: {}", target);
-        log_error!("{}", error_msg);
-        return Err(anyhow::anyhow!(error_msg));
-    }
-    
-    let host = parts[0];
-    let port = parts[1].parse::<u16>().map_err(|_e| {
-        let error_msg = format!("Invalid port in CONNECT target: {}", parts[1]);
-        log_error!("{}", error_msg);
-        anyhow::anyhow!(error_msg)
-    })?;
-    
-    log_debug!("CONNECT to {}:{}", host, port);
-    
-    // Attempt to establish connection to target
-    match TcpStream::connect(format!("{}:{}", host, port)).await {
-        Ok(_upstream_stream) => {
-            let connect_time = connect_start.elapsed().as_millis();
-            log_debug!("CONNECT successful to {}:{} in {}ms", host, port, connect_time);
-            
-            // Create a response that will upgrade the connection
-            let response = Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::empty())
-                .unwrap();
-            
-            // For now, return a simple 200 OK response
-            // The full tunneling implementation requires more complex handling
-            // that would need to be integrated with the hyper server's upgrade mechanism
-            log_debug!("CONNECT tunnel setup completed for {}", format!("{}:{}", host, port));
-            
-            let response_data = ResponseData::new(
-                200,
-                "OK".to_string(),
-                "text/plain".to_string(),
-                vec![],
-                connect_time as u64,
-            );
-            
-            let log_entry = ProxyLog {
-                request: request_data.clone(),
-                response: Some(response_data.clone()),
-                error: None,
-            };
-            
-            // Log transaction
-            log_proxy_transaction!(&log_entry);
-            log_debug!("CONNECT transaction logged: target={}:{}, connect_time={}ms", 
-                      host, port, connect_time);
-            
-            // Return the upgrade response
-            Ok(response)
-        },
-        Err(e) => {
-            let connect_time = connect_start.elapsed().as_millis();
-            let error_msg = format!("Failed to connect to {}:{}: {}", host, port, e);
-            log_error!("CONNECT failed after {}ms: {}", connect_time, error_msg);
-            
-            let log_entry = ProxyLog {
-                request: request_data.clone(),
-                response: None,
-                error: Some(error_msg.clone()),
-            };
-            
-            // Log the error
-            log_proxy_transaction!(&log_entry);
-            log_debug!("CONNECT error transaction logged: target={}:{}, connect_time={}ms", 
-                      host, port, connect_time);
-            
-            Err(anyhow::anyhow!(error_msg))
         }
     }
 }

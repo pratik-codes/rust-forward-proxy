@@ -1,8 +1,11 @@
 //! HTTP utility functions
 
-use hyper::{HeaderMap, header::{HeaderName, HeaderValue}};
+use hyper::{HeaderMap, header::{HeaderName, HeaderValue}, Body, Request, Response, StatusCode};
 use std::collections::HashMap;
 use tracing::debug;
+use anyhow::Result;
+use crate::models::RequestData;
+use form_urlencoded;
 
 /// Check if a header is a hop-by-hop header
 pub fn is_hop_by_hop_header(name: &str) -> bool {
@@ -77,4 +80,118 @@ pub fn parse_form_data(body: &[u8]) -> HashMap<String, String> {
     }
 
     form_data
+}
+
+/// Parse host and port from CONNECT target
+pub fn parse_connect_target(target: &str) -> Result<(String, u16), String> {
+    let parts: Vec<&str> = target.split(':').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid CONNECT target format: {}", target));
+    }
+    
+    let host = parts[0].to_string();
+    let port = parts[1].parse::<u16>().unwrap_or(443);
+    
+    Ok((host, port))
+}
+
+/// Build error response
+pub fn build_error_response(status: StatusCode, message: &str) -> Response<Body> {
+    Response::builder()
+        .status(status)
+        .body(Body::from(message.to_string()))
+        .unwrap()
+}
+
+/// Extract headers from request and populate RequestData
+pub fn extract_headers(req_headers: &HeaderMap, request_data: &mut RequestData) {
+    let mut header_count = 0;
+    for (name, value) in req_headers {
+        if let Ok(value_str) = value.to_str() {
+            request_data
+                .headers
+                .insert(name.to_string().to_lowercase(), value_str.to_string());
+            header_count += 1;
+        }
+    }
+    debug!("Extracted {} headers from request", header_count);
+}
+
+/// Extract cookies from request and populate RequestData
+pub fn extract_cookies_to_request_data(req_headers: &HeaderMap, request_data: &mut RequestData) {
+    if let Some(cookie_header) = req_headers.get("cookie") {
+        if let Ok(cookie_str) = cookie_header.to_str() {
+            request_data.cookies = parse_cookies(cookie_str);
+            debug!("Extracted {} cookies from request", request_data.cookies.len());
+        }
+    } else {
+        debug!("No cookies found in request");
+    }
+}
+
+/// Determine if request body should be extracted and return content type
+pub fn should_extract_body(req_headers: &HeaderMap, method: &str) -> (bool, Option<String>) {
+    if let Some(content_type) = req_headers.get("content-type") {
+        if let Ok(content_type_str) = content_type.to_str() {
+            debug!("Request content-type: {}", content_type_str);
+            
+            // Check if content type suggests a body
+            let should_extract = content_type_str.contains("application/x-www-form-urlencoded") ||
+                content_type_str.contains("application/json") ||
+                content_type_str.contains("text/") ||
+                content_type_str.contains("multipart/");
+            
+            (should_extract, Some(content_type_str.to_string()))
+        } else {
+            (false, None)
+        }
+    } else {
+        debug!("No content-type header found");
+        // For requests without content-type, extract body if method suggests it
+        let should_extract = method == "POST" || method == "PUT" || method == "PATCH";
+        (should_extract, None)
+    }
+}
+
+/// Extract and process request body
+pub async fn extract_body(body: Body, request_data: &mut RequestData) {
+    debug!("Extracting request body");
+    let body_bytes = hyper::body::to_bytes(body).await.unwrap_or_default();
+    request_data.body = body_bytes.to_vec();
+    debug!("Body extracted, size: {} bytes", request_data.body.len());
+    
+    // Parse form data only for form-encoded content
+    if let Some(content_type) = &request_data.content_type {
+        if content_type.contains("application/x-www-form-urlencoded") {
+            request_data.form_data = parse_form_data(&body_bytes);
+            debug!("Extracted {} form fields", request_data.form_data.len());
+        }
+    }
+}
+
+/// Build forwarding request with proper headers
+pub fn build_forwarding_request(request_data: &RequestData) -> Result<Request<Body>> {
+    let mut request_builder = Request::builder()
+        .method(request_data.method.as_str())
+        .uri(&request_data.url);
+
+    // Add headers (excluding hop-by-hop headers)
+    let mut forwarded_headers = 0;
+    let mut skipped_headers = 0;
+    for (name, value) in &request_data.headers {
+        if !is_hop_by_hop_header(name) {
+            request_builder = request_builder.header(name, value);
+            forwarded_headers += 1;
+        } else {
+            skipped_headers += 1;
+        }
+    }
+    debug!("Header forwarding: {} forwarded, {} skipped (hop-by-hop)", 
+               forwarded_headers, skipped_headers);
+
+    // Build the request
+    let request = request_builder.body(Body::from(request_data.body.clone()))?;
+    debug!("Forward request built, body size: {} bytes", request_data.body.len());
+    
+    Ok(request)
 }

@@ -10,6 +10,9 @@ tokio = { version = "1.0", features = ["full"] }
 # HTTP server and client
 hyper = { version = "0.14", features = ["full", "server", "client"] }
 
+# Additional support for proxying
+futures = "0.3"
+
 # Serialization for logging
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

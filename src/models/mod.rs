@@ -101,13 +101,18 @@ impl RequestData {
             host: None,
             body: Vec::new(),
             form_data: HashMap::new(),
-            is_https: url.starts_with("https://"),
+            is_https: url.starts_with("https://") || (url.contains(':') && !url.starts_with("http://")),
             protocol: "HTTP/1.1".to_string(),
         }
     }
 
     // Extract path from URL
     fn extract_path(url: &str) -> String {
+        // For CONNECT requests, the URL is host:port format, not a proper URL
+        if url.contains(':') && !url.starts_with("http://") && !url.starts_with("https://") {
+            return "".to_string(); // CONNECT doesn't have a path
+        }
+        
         if let Ok(parsed) = url::Url::parse(url) {
             parsed.path().to_string()
         } else {
@@ -117,6 +122,11 @@ impl RequestData {
 
     // Extract query string from URL
     fn extract_query(url: &str) -> Option<String> {
+        // For CONNECT requests, the URL is host:port format, not a proper URL
+        if url.contains(':') && !url.starts_with("http://") && !url.starts_with("https://") {
+            return None; // CONNECT doesn't have query params
+        }
+        
         if let Ok(parsed) = url::Url::parse(url) {
             parsed.query().map(|q| q.to_string())
         } else {
