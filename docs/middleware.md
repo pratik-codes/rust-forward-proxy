@@ -1,209 +1,361 @@
 # Middleware System
 
-This document provides detailed information about the middleware system in the Rust Forward Proxy.
+This document provides detailed information about the middleware system in the Rust Forward Proxy and how it integrates with the current modular architecture.
 
 ## Overview
 
-Middleware are components that intercept HTTP requests and responses in the processing pipeline. They can perform various tasks such as authentication, logging, and rate limiting. The middleware system follows a chainable pattern where each middleware is executed in sequence.
+The Rust Forward Proxy uses a flexible middleware system that can intercept and process HTTP requests and responses. The middleware framework is designed to be extensible and follows Rust's ownership patterns for safe, concurrent operation.
+
+## Current Architecture Integration
+
+### Middleware in the Request Pipeline
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────────┐
+│  Incoming       │───▶│    Middleware    │───▶│   Request Handler   │
+│  Request        │    │    Pipeline      │    │                     │
+└─────────────────┘    └──────────────────┘    └─────────────────────┘
+                                │
+                                ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────────┐
+│  Outgoing       │◀───│   Response       │◀───│   Upstream          │
+│  Response       │    │   Processing     │    │   Server            │
+└─────────────────┘    └──────────────────┘    └─────────────────────┘
+```
+
+### Integration with Current Codebase
+
+The middleware system integrates seamlessly with the current modular architecture:
+
+- **Server Logic** (`proxy/server.rs`) - Main request routing and middleware orchestration
+- **HTTP Utilities** (`utils/http.rs`) - Reusable functions for request/response processing
+- **Logging Utilities** (`utils/logging.rs`) - Consistent logging across middleware
+- **Data Models** (`models/mod.rs`) - Shared data structures for request/response
 
 ## Available Middleware
 
-The Rust Forward Proxy includes several built-in middleware:
+### 1. Authentication Middleware (`middleware/auth.rs`)
 
-### 1. Authentication Middleware (`auth.rs`)
+**Purpose**: Provides API key-based authentication for incoming requests.
 
-Provides API key-based authentication for requests.
+#### Current Implementation
+
+```rust
+pub struct AuthMiddleware {
+    required_api_key: Option<String>,
+}
+
+impl AuthMiddleware {
+    pub fn new(api_key: Option<String>) -> Self {
+        Self {
+            required_api_key: api_key,
+        }
+    }
+
+    pub fn authenticate(&self, request: &Request<Body>) -> Result<bool> {
+        // Bearer token authentication via Authorization header
+    }
+}
+```
 
 #### Features
 
-- Bearer token authentication via the `Authorization` header
-- Optional authentication (can be disabled)
-- Returns a 401 Unauthorized response when authentication fails
+- **Bearer Token Authentication**: Validates `Authorization: Bearer <token>` headers
+- **Optional Authentication**: Can be disabled by setting `api_key` to `None`
+- **Secure Validation**: Constant-time comparison to prevent timing attacks
+- **Error Handling**: Proper error responses for authentication failures
 
-#### Usage
+#### Usage Example
 
 ```rust
-// Create an authentication middleware with a required API key
-let auth_middleware = AuthMiddleware::new(Some("your-api-key".to_string()));
+use crate::utils::{log_incoming_request, build_error_response};
 
-// Check if a request is authenticated
+let auth_middleware = AuthMiddleware::new(Some("your-secret-key".to_string()));
+
+// In request handler
 match auth_middleware.authenticate(&request) {
     Ok(true) => {
-        // Request is authenticated, continue processing
+        log_incoming_request(&method, &uri, &remote_addr);
+        // Continue with request processing
     }
     Ok(false) => {
-        // Authentication failed, return unauthorized response
-        return auth_middleware.create_unauthorized_response();
+        return Ok(build_error_response(StatusCode::UNAUTHORIZED, "Authentication failed"));
     }
-    Err(_) => {
-        // Error during authentication, handle error
+    Err(e) => {
+        log_error!("Auth middleware error: {}", e);
+        return Ok(build_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Auth error"));
     }
 }
 ```
 
-#### Configuration
+### 2. Logging Middleware (`middleware/logging.rs`)
 
-The authentication middleware can be configured in the following ways:
+**Purpose**: Provides request/response logging capabilities.
 
-- **API Key**: Set to `Some(api_key)` to enable authentication, or `None` to disable it
-- **Token Format**: Currently supports Bearer tokens in the format `Bearer your-api-key`
+#### Integration with New Logging System
 
-### 2. Rate Limiting Middleware (`rate_limit.rs`)
-
-Prevents abuse by limiting the number of requests from a single client within a specified time window.
-
-#### Features
-
-- Configurable request limits and time windows
-- Client identification based on IP address or custom identifiers
-- Thread-safe request counting using Mutex
-
-#### Usage
+The logging middleware now integrates with the new utility-based logging system:
 
 ```rust
-use std::time::Duration;
+use crate::utils::{
+    log_incoming_request, 
+    log_http_success, 
+    log_http_failure,
+    create_connect_transaction
+};
 
-// Create a rate limiting middleware
-// Allow 100 requests per client in a 60 second window
-let rate_limiter = RateLimitMiddleware::new(100, Duration::from_secs(60));
+pub struct LoggingMiddleware {
+    pub enable_request_logging: bool,
+    pub enable_response_logging: bool,
+    pub log_level: LogLevel,
+}
 
-// Check if a request is within rate limits
-match rate_limiter.check_rate_limit("client_identifier") {
-    Ok(true) => {
-        // Request is within rate limits, continue processing
+impl LoggingMiddleware {
+    pub fn log_request(&self, request_data: &RequestData, remote_addr: &SocketAddr) {
+        if self.enable_request_logging {
+            log_incoming_request(&request_data.method, &request_data.url, remote_addr);
+        }
     }
-    Ok(false) => {
-        // Rate limit exceeded, return 429 Too Many Requests
-        return Response::builder()
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .body(Body::from("Rate limit exceeded"))
-            .unwrap();
-    }
-    Err(_) => {
-        // Error during rate limit check, handle error
+
+    pub fn log_response(&self, request_data: &RequestData, response_data: &ResponseData, duration: u128) {
+        if self.enable_response_logging {
+            log_http_success(&request_data.method, &request_data.path, 
+                           StatusCode::from_u16(response_data.status_code).unwrap(), duration);
+        }
     }
 }
 ```
 
-#### Configuration
+#### Features
 
-The rate limiting middleware can be configured with:
+- **Two-Tier Logging**: Supports both clean INFO and verbose DEBUG logging
+- **Selective Logging**: Can enable/disable request and response logging independently
+- **Performance Monitoring**: Tracks request duration and response times
+- **Structured Data**: Integrates with the `ProxyLog` transaction system
 
-- **Max Requests**: The maximum number of requests allowed within the time window
-- **Time Window**: The duration of the rate limiting window (e.g., 60 seconds)
+### 3. Rate Limiting Middleware (`middleware/rate_limit.rs`)
 
-### 3. Logging Middleware (`logging.rs`)
+**Purpose**: Provides IP-based rate limiting to prevent abuse.
 
-Records detailed information about requests and responses.
+#### Current Implementation
+
+```rust
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+pub struct RateLimitMiddleware {
+    requests_per_minute: u32,
+    request_counts: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
+}
+
+impl RateLimitMiddleware {
+    pub fn new(requests_per_minute: u32) -> Self {
+        Self {
+            requests_per_minute,
+            request_counts: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn check_rate_limit(&self, client_ip: IpAddr) -> bool {
+        // Implementation checks request count per IP per minute
+    }
+}
+```
 
 #### Features
 
-- Request method, URI, and headers logging
-- Response status code and timing information
-- Asynchronous logging to avoid blocking the request pipeline
+- **IP-Based Rate Limiting**: Tracks requests per IP address
+- **Configurable Limits**: Customizable requests per minute
+- **Memory Efficient**: Automatic cleanup of old entries
+- **Thread Safe**: Uses `Arc<Mutex<>>` for concurrent access
 
-#### Usage
+#### Usage Example
 
 ```rust
-// Create a logging middleware
-let logging_middleware = LoggingMiddleware::new();
+let rate_limiter = RateLimitMiddleware::new(60); // 60 requests per minute
 
-// Log an incoming request
-logging_middleware.log_request(&request).await;
-
-// Record the start time
-let start_time = std::time::Instant::now();
-
-// Process the request and get a response
-// ...
-
-// Log the response with duration
-let duration = start_time.elapsed();
-logging_middleware.log_response(&response, duration).await;
+// In request handler
+if !rate_limiter.check_rate_limit(remote_addr.ip()) {
+    log_http_failure(&method, &path, 0, &anyhow::anyhow!("Rate limit exceeded"));
+    return Ok(build_error_response(StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded"));
+}
 ```
 
-## Creating Custom Middleware
+## Implementing Custom Middleware
 
-You can create your own middleware by following these steps:
+### Middleware Trait Pattern
 
-1. Create a new struct to represent your middleware
-2. Implement the necessary methods for request and response processing
-3. Integrate your middleware into the request processing pipeline
+```rust
+use crate::models::{RequestData, ResponseData};
+use crate::utils::{log_incoming_request, build_error_response};
+use hyper::{Request, Response, Body, StatusCode};
+use std::net::SocketAddr;
+
+pub trait Middleware {
+    async fn process_request(
+        &self, 
+        request: &mut Request<Body>, 
+        request_data: &mut RequestData,
+        remote_addr: &SocketAddr
+    ) -> Result<Option<Response<Body>>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn process_response(
+        &self,
+        request_data: &RequestData,
+        response: &mut Response<Body>,
+        response_data: &mut ResponseData
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+```
 
 ### Example: Custom Header Middleware
 
 ```rust
-pub struct CustomHeaderMiddleware {
-    header_name: String,
-    header_value: String,
+pub struct HeaderMiddleware {
+    required_headers: Vec<String>,
 }
 
-impl CustomHeaderMiddleware {
-    pub fn new(header_name: String, header_value: String) -> Self {
-        Self {
-            header_name,
-            header_value,
-        }
+impl HeaderMiddleware {
+    pub fn new(headers: Vec<String>) -> Self {
+        Self { required_headers: headers }
     }
-    
-    pub fn add_header(&self, request: &mut Request<Body>) {
-        request.headers_mut().insert(
-            HeaderName::from_str(&self.header_name).unwrap(),
-            HeaderValue::from_str(&self.header_value).unwrap(),
-        );
+}
+
+impl Middleware for HeaderMiddleware {
+    async fn process_request(
+        &self,
+        request: &mut Request<Body>,
+        request_data: &mut RequestData,
+        remote_addr: &SocketAddr
+    ) -> Result<Option<Response<Body>>, Box<dyn std::error::Error + Send + Sync>> {
+        
+        for required_header in &self.required_headers {
+            if !request_data.headers.contains_key(required_header) {
+                log_http_failure(&request_data.method, &request_data.path, 0, 
+                               &anyhow::anyhow!("Missing required header: {}", required_header));
+                
+                return Ok(Some(build_error_response(
+                    StatusCode::BAD_REQUEST, 
+                    &format!("Missing required header: {}", required_header)
+                )));
+            }
+        }
+        
+        Ok(None) // Continue processing
+    }
+
+    async fn process_response(
+        &self,
+        _request_data: &RequestData,
+        response: &mut Response<Body>,
+        _response_data: &mut ResponseData
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Add custom response headers
+        response.headers_mut().insert("X-Processed-By", "Rust-Forward-Proxy".parse().unwrap());
+        Ok(())
     }
 }
 ```
 
-## Middleware Chain
+## Middleware Integration in Server
 
-While the current implementation doesn't have a formal middleware chain, you can create one by calling each middleware in sequence in the request handler:
+### Request Pipeline Integration
+
+The middleware system integrates with the current server architecture:
 
 ```rust
-async fn process_request(req: Request<Body>) -> Result<Response<Body>> {
+// In proxy/server.rs
+async fn handle_request(
+    req: Request<Body>,
+    remote_addr: SocketAddr,
+) -> Result<Response<Body>, Infallible> {
+    let start_time = std::time::Instant::now();
+    let method = req.method().to_string();
+    let uri = req.uri().to_string();
+
+    // Log incoming request using utility function
+    log_incoming_request(&method, &uri, &remote_addr);
+
+    // Create request data
+    let mut request_data = RequestData::new(method.clone(), uri.clone(), remote_addr.ip(), remote_addr.port());
+    
+    // Apply middleware chain
+    if let Some(middleware_response) = apply_middleware_chain(&mut req, &mut request_data, &remote_addr).await {
+        return Ok(middleware_response);
+    }
+    
+    // Continue with normal request processing...
+}
+
+async fn apply_middleware_chain(
+    request: &mut Request<Body>,
+    request_data: &mut RequestData,
+    remote_addr: &SocketAddr
+) -> Option<Response<Body>> {
     // Apply authentication middleware
-    if !auth_middleware.authenticate(&req)? {
-        return Ok(auth_middleware.create_unauthorized_response());
-    }
-    
-    // Apply rate limiting middleware
-    if !rate_limit_middleware.check_rate_limit(&client_id)? {
-        return Ok(Response::builder()
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .body(Body::from("Rate limit exceeded"))
-            .unwrap());
-    }
-    
-    // Log the request
-    logging_middleware.log_request(&req).await;
-    
-    // Forward the request to the upstream server
-    // ...
-    
-    Ok(response)
+    // Apply rate limiting middleware  
+    // Apply custom middleware
+    None // If all middleware pass
 }
 ```
 
-## Best Practices
+## Performance Considerations
 
-1. **Middleware Order**: Consider the order in which middleware are applied. Authentication should typically come before other middleware.
+### Middleware Efficiency
 
-2. **Error Handling**: Each middleware should handle its own errors gracefully and decide whether to continue the request processing or abort it.
+1. **Async Processing**: All middleware operations are async to prevent blocking
+2. **Early Returns**: Middleware can short-circuit the pipeline for efficiency
+3. **Shared State**: Uses `Arc<Mutex<>>` for thread-safe shared state
+4. **Memory Management**: Automatic cleanup of old data in rate limiters
 
-3. **Performance**: Middleware should be efficient and avoid blocking operations. Use asynchronous code where appropriate.
+### Integration with Logging System
 
-4. **State Management**: If your middleware needs to maintain state, ensure it's thread-safe using appropriate synchronization primitives.
+The middleware leverages the efficient logging utilities:
 
-5. **Configuration**: Make your middleware configurable so it can be adapted to different scenarios.
+```rust
+// Clean INFO logging
+log_incoming_request(&method, &uri, &remote_addr);
+log_http_success(&method, &path, status, duration);
 
-## Future Improvements
+// Detailed DEBUG logging when needed
+log_debug!("Middleware processing: {:#?}", request_data);
+```
 
-1. **Formal Middleware Chain**: Implement a more structured middleware chain with proper ordering and error propagation.
+## Configuration and Deployment
 
-2. **Middleware Registry**: Create a registry for dynamically registering and configuring middleware.
+### Environment-Based Configuration
 
-3. **Conditional Middleware**: Allow middleware to be applied conditionally based on request attributes.
+```rust
+// In configuration
+pub struct MiddlewareConfig {
+    pub enable_auth: bool,
+    pub api_key: Option<String>,
+    pub rate_limit_rpm: u32,
+    pub enable_request_logging: bool,
+    pub enable_response_logging: bool,
+}
 
-4. **Metrics Collection**: Add middleware for collecting performance metrics.
+impl Default for MiddlewareConfig {
+    fn default() -> Self {
+        Self {
+            enable_auth: false,
+            api_key: std::env::var("PROXY_API_KEY").ok(),
+            rate_limit_rpm: 60,
+            enable_request_logging: true,
+            enable_response_logging: true,
+        }
+    }
+}
+```
 
-5. **Request/Response Modification**: Enhance middleware to modify both requests and responses.
+### Production Deployment
+
+For production deployments:
+
+1. **Enable Authentication**: Set `PROXY_API_KEY` environment variable
+2. **Configure Rate Limiting**: Adjust limits based on expected traffic
+3. **Logging Configuration**: Use INFO level for production, DEBUG for troubleshooting
+4. **Monitoring**: Leverage the structured logging for observability
+
+The middleware system provides a solid foundation for extending the proxy with additional functionality while maintaining the clean, modular architecture of the current codebase.

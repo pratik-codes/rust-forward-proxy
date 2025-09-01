@@ -1,6 +1,15 @@
 # Deployment Guide
 
-This guide provides detailed instructions for deploying the Rust Forward Proxy in various environments.
+This guide provides detailed instructions for deploying the Rust Forward Proxy in various environments, updated for the current modular architecture with full HTTP/HTTPS support.
+
+## Current Implementation Features
+
+The proxy now includes:
+- ✅ **Full HTTP Interception** - Complete request/response logging and processing
+- ✅ **HTTPS Tunneling** - Proper CONNECT method support with hyper upgrade mechanism  
+- ✅ **Production Logging** - Two-tier logging system (clean INFO, verbose DEBUG)
+- ✅ **Modular Architecture** - Well-organized codebase following DRY principles
+- ✅ **High Performance** - Async Tokio/Hyper implementation with bidirectional tunneling
 
 ## Prerequisites
 
@@ -33,11 +42,37 @@ cargo run
 #### Testing the Deployment
 
 ```bash
-# Test the proxy with curl
+# Test HTTP request interception
 curl -x http://localhost:8080 http://httpbin.org/get
 
-# Test with verbose output
-curl -v -x http://localhost:8080 http://httpbin.org/get
+# Test HTTPS tunneling (CONNECT method)
+curl -x http://localhost:8080 https://httpbin.org/get
+
+# Test with verbose output to see CONNECT tunnel
+curl -v -x http://localhost:8080 https://www.google.com
+
+# Test POST request with data
+curl -x http://localhost:8080 -X POST http://httpbin.org/post \
+  -H "Content-Type: application/json" \
+  -d '{"test":"data"}'
+```
+
+#### Verifying Logging Output
+
+**INFO Level (Production):**
+```bash
+RUST_LOG=info cargo run
+# Should show clean, single-line logs:
+# 📥 GET http://httpbin.org/get from 127.0.0.1
+# 🔄 Forwarding GET to upstream
+# 📤 Upstream response: 200 (156ms)
+# ✅ GET /get → 200 OK (158ms)
+```
+
+**DEBUG Level (Development):**
+```bash
+RUST_LOG=debug cargo run
+# Should show verbose logs with full request/response data
 ```
 
 ### 2. Production Deployment

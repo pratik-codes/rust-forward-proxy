@@ -1,152 +1,240 @@
 # Rust Forward Proxy Architecture
 
-This document provides a detailed explanation of the architecture of the Rust Forward Proxy server.
+This document provides a detailed explanation of the current architecture of the Rust Forward Proxy server.
 
 ## Overview
 
 The Rust Forward Proxy is designed as a high-performance HTTP/HTTPS forward proxy server with a focus on:
 
-- **Performance**: Utilizing Rust's memory safety and performance characteristics along with asynchronous programming via Tokio
-- **Extensibility**: Modular architecture with middleware support
-- **Robustness**: Comprehensive error handling and logging
-- **Production-readiness**: Structured logging, configurable timeouts, and connection management
+- **Performance**: Utilizing Rust's memory safety and performance characteristics along with asynchronous programming via Tokio and Hyper
+- **Clean Architecture**: Modular design following DRY principles with utility separation
+- **Full Tunneling Support**: Complete HTTP interception and HTTPS tunneling via CONNECT method
+- **Production Logging**: Two-tier logging system (clean INFO, verbose DEBUG)
+- **Maintainability**: Well-organized codebase with clear separation of concerns
 
 ## System Architecture
 
 ```
-┌────────────────┐     ┌─────────────────┐     ┌────────────────────┐
-│                │     │                 │     │                    │
-│  HTTP Client   │────▶│  Proxy Server   │────▶│  Upstream Server   │
-│  (Browser)     │     │                 │     │                    │
-│                │◀────│                 │◀────│                    │
-└────────────────┘     └─────────────────┘     └────────────────────┘
-                               │
-                               │
-                               ▼
-                       ┌─────────────────┐
-                       │     Logging     │
-                       └─────────────────┘
+┌─────────────────┐     ┌─────────────────────────┐     ┌──────────────────────┐
+│                 │     │                         │     │                      │
+│   HTTP Client   │────▶│    Forward Proxy        │────▶│   Upstream Server    │
+│   (Browser)     │     │                         │     │                      │
+│                 │◀────│  ┌─────────────────────┐ │◀────│                      │
+└─────────────────┘     │  │   HTTP Requests     │ │     └──────────────────────┘
+                        │  │  (Full Intercept)   │ │              
+┌─────────────────┐     │  └─────────────────────┘ │     ┌──────────────────────┐
+│                 │     │                         │═════│                      │
+│   HTTPS Client  │═════│  ┌─────────────────────┐ │═════│   HTTPS Server       │
+│   (Browser)     │     │  │  CONNECT Tunneling  │ │     │                      │
+│                 │═════│  │   (Raw TCP Pass)    │ │═════│                      │
+└─────────────────┘     │  └─────────────────────┘ │     └──────────────────────┘
+                        └─────────────────────────┘              
+                                      │
+                                      ▼
+                               ┌──────────────┐
+                               │   Logging    │
+                               │  INFO/DEBUG  │
+                               └──────────────┘
 ```
 
-## Core Components
+## Current Architecture Components
 
-### 1. Proxy Server (`src/proxy/server.rs`)
+### 1. Core Server (`src/proxy/server.rs`) - 402 lines
 
-The `ProxyServer` struct is the main entry point for the proxy server:
+**Main Handler Functions:**
+- `handle_request()` - Main request dispatcher (clean and lean)
+- `handle_connect_request()` - CONNECT tunneling with hyper upgrade mechanism
+- `handle_http_request()` - HTTP request processing with full interception
+- `extract_request_data()` - Request data extraction and processing
+- `handle_regular_request()` - Upstream forwarding logic
 
-- It binds to a socket address and listens for incoming connections
-- For each connection, it creates a new service function to handle requests
-- The `handle_request` function processes each HTTP request
-- The `handle_regular_request` function forwards requests to upstream servers
+**Key Features:**
+- **CONNECT Tunneling**: Uses `hyper::upgrade::on()` for proper HTTPS tunneling
+- **Bidirectional Data Copy**: `tunnel_bidirectional()` for raw TCP forwarding
+- **Clean Request Flow**: Simplified main handler with extracted utility functions
 
-### 2. Request Processing Pipeline
+### 2. Utility Modules (`src/utils/`) - 366 lines total
 
+#### HTTP Utilities (`src/utils/http.rs`) - 197 lines
+```rust
+// CONNECT handling
+parse_connect_target() -> Result<(String, u16), String>
+build_error_response(status: StatusCode, message: &str) -> Response<Body>
+
+// Request processing  
+extract_headers(req_headers: &HeaderMap, request_data: &mut RequestData)
+extract_cookies_to_request_data(req_headers: &HeaderMap, request_data: &mut RequestData)
+should_extract_body(req_headers: &HeaderMap, method: &str) -> (bool, Option<String>)
+extract_body(body: Body, request_data: &mut RequestData)
+
+// Request building
+build_forwarding_request(request_data: &RequestData) -> Result<Request<Body>>
 ```
-┌────────────────┐     ┌─────────────────┐     ┌────────────────────┐     ┌─────────────────┐
-│                │     │                 │     │                    │     │                 │
-│ Parse Request  │────▶│ Apply Middleware│────▶│  Forward Request   │────▶│ Process Response│
-│                │     │                 │     │                    │     │                 │
-└────────────────┘     └─────────────────┘     └────────────────────┘     └─────────────────┘
+
+#### Logging Utilities (`src/utils/logging.rs`) - 111 lines
+```rust
+// Request logging
+log_incoming_request(method: &str, uri: &str, remote_addr: &SocketAddr)
+log_forwarding_request(request_data: &RequestData)
+
+// CONNECT logging
+log_connect_request(uri: &str)
+log_connect_success(host: &str, port: u16, connect_time: u128)
+log_connect_failure(host: &str, port: u16, connect_time: u128, error: &str)
+
+// HTTP logging  
+log_http_success(method: &str, path: &str, status: StatusCode, total_time: u128)
+log_http_failure(method: &str, path: &str, total_time: u128, error: &anyhow::Error)
+
+// Transaction logging
+create_connect_transaction(request_data, response_data, error) -> ProxyLog
 ```
 
-1. **Parse Request**: Extract information from the incoming request
-2. **Apply Middleware**: Authentication, rate limiting, logging, etc.
-3. **Forward Request**: Send the request to the upstream server
-4. **Process Response**: Return the response to the client
+#### URL/Time Utilities (`src/utils/url.rs`, `src/utils/time.rs`) - 47 lines
+- URL parsing and manipulation functions
+- Time-related utility functions
 
-### 3. Configuration (`src/config/settings.rs`)
+### 3. Data Models (`src/models/mod.rs`) - 137 lines
 
-The `ProxyConfig` struct defines the configuration for the proxy server:
+**Core Data Structures:**
+```rust
+pub struct RequestData {
+    // HTTP request metadata
+    method: String,
+    url: String, 
+    path: String,
+    query_string: Option<String>,
+    headers: HashMap<String, String>,
+    cookies: HashMap<String, String>,
+    body: Vec<u8>,
+    form_data: HashMap<String, String>,
+    
+    // Connection metadata
+    client_ip: IpAddr,
+    client_port: u16,
+    timestamp: DateTime<Utc>,
+    is_https: bool,
+    // ... other fields
+}
 
-- `listen_addr`: The address the server listens on
-- `log_level`: The logging level
-- `upstream`: Configuration for upstream servers
-- `request_timeout`: Maximum time to wait for a response
-- `max_body_size`: Maximum size of request/response bodies
+pub struct ResponseData {
+    status_code: u16,
+    status_text: String,  
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    response_time_ms: u64,
+    // ... other fields
+}
 
-### 4. Middleware System (`src/proxy/middleware/`)
+pub struct ProxyLog {
+    request: RequestData,
+    response: Option<ResponseData>,
+    error: Option<String>,
+}
+```
 
-The middleware system allows you to intercept and modify requests and responses:
+### 4. Logging System (`src/logging/mod.rs`) - 296 lines
 
-- **Authentication**: Verify API keys or other credentials
-- **Rate Limiting**: Prevent abuse by limiting requests
-- **Logging**: Record request/response information
+**Two-Tier Logging Architecture:**
 
-### 5. Upstream Management (`src/proxy/upstream/`)
+#### INFO Level (Production)
+```bash
+📥 GET http://httpbin.org/get from 127.0.0.1
+🔄 Forwarding GET to upstream  
+📤 Upstream response: 200 (156ms)
+✅ GET /get → 200 OK (158ms)
+##################################
 
-The upstream management system handles connections to backend servers:
+🔐 CONNECT tunnel to example.com:443
+✅ Tunnel established to example.com:443 (45ms)
+🔌 Tunnel completed for example.com:443
+##################################
+```
 
-- **Client**: Sends requests to upstream servers
-- **Connection Pool**: Reuses connections for performance
-- **Health Checker**: Monitors the health of upstream servers
+#### DEBUG Level (Development)  
+```bash
+🔍 REQUEST DETAILS:
+  Method: GET
+  URI: http://httpbin.org/get
+  Remote: 127.0.0.1:54321
+  Headers: 12
 
-### 6. Logging System (`src/logging/mod.rs`)
+🔄 FORWARDING REQUEST:
+  Method: GET
+  URL: http://httpbin.org/get  
+  Headers: 10
+  Body Size: 0 bytes
 
-The logging system provides comprehensive logging capabilities:
+📋 HTTP TRANSACTION:
+{
+  "request": { ... full RequestData struct ... },
+  "response": { ... full ResponseData struct ... }
+}
+```
 
-- Structured logging via the `tracing` crate
-- Environment-based configuration
-- Console and file output options
+## Data Flow Architecture
 
-## Data Flow
+### HTTP Request Flow
+```
+1. Client Request → handle_request()
+2. log_incoming_request() → Clean INFO log
+3. extract_request_data() → Parse headers, cookies, body
+4. handle_http_request() → Process with full interception  
+5. build_forwarding_request() → Construct upstream request
+6. Forward to upstream → Get response
+7. log_http_success() → Clean completion log
+8. Return response to client
+```
 
-1. **Request Ingress**
-   - Client sends HTTP request to proxy server
-   - Proxy server parses the request and creates a `RequestData` struct
+### HTTPS CONNECT Flow  
+```
+1. Client CONNECT → handle_request()
+2. log_connect_request() → Log tunnel establishment
+3. handle_connect_request() → Parse target host:port
+4. TcpStream::connect() → Establish upstream connection
+5. handle_connect_tunnel() → Return 200 OK + spawn tunnel task
+6. hyper::upgrade::on() → Upgrade connection 
+7. tunnel_bidirectional() → Raw TCP forwarding
+8. log_connect_success() → Log tunnel completion
+```
 
-2. **Middleware Processing**
-   - Request passes through middleware chain
-   - Each middleware can modify the request or abort processing
+## Modular Architecture Benefits
 
-3. **Upstream Forwarding**
-   - Proxy server forwards the request to the upstream server
-   - Connection pool is used to manage connections
+### 1. **Clean Separation of Concerns**
+- **Server Logic**: Pure request handling and flow control
+- **HTTP Utilities**: Reusable HTTP processing functions  
+- **Logging Utilities**: Consistent logging across the application
+- **Data Models**: Clear data structure definitions
 
-4. **Response Processing**
-   - Upstream server sends response
-   - Proxy server processes the response and creates a `ResponseData` struct
+### 2. **DRY Principle Implementation**
+- **No Code Duplication**: Common patterns extracted into utility functions
+- **Reusable Components**: Utilities can be imported anywhere
+- **Single Source of Truth**: Each function has one clear responsibility
 
-5. **Response Egress**
-   - Response is sent back to client
-   - Transaction is logged
+### 3. **Testability & Maintainability**
+- **Unit Testing**: Individual utility functions can be tested in isolation
+- **Clear Dependencies**: Easy to trace function dependencies
+- **Focused Changes**: Modifications affect only relevant modules
 
-## Error Handling
-
-The error handling system is defined in `src/error/mod.rs`:
-
-- Custom `Error` enum with various error types
-- Integration with `thiserror` for error messages
-- Proper error propagation throughout the codebase
-
-## Asynchronous Design
-
-The proxy server is built on top of Tokio for asynchronous I/O:
-
-- Uses `hyper` for HTTP server/client functionality
-- Implements non-blocking I/O for high concurrency
-- Uses `tokio::time` for timeouts
-
-## Thread Safety
-
-The proxy server is designed to be thread-safe:
-
-- Uses `Arc` and `Mutex` for shared state
-- Implements `Clone` for shared components
-- Uses `tokio::sync` primitives for asynchronous synchronization
+### 4. **Performance Characteristics**
+- **Async Throughout**: Full Tokio/Hyper async stack
+- **Zero-Copy Where Possible**: Minimal data copying in request/response handling
+- **Connection Reuse**: HTTP client reuses connections for efficiency
+- **Streaming**: Large request/response bodies handled efficiently
 
 ## Extension Points
 
-The proxy server can be extended in several ways:
+The current architecture supports extension in several areas:
 
-1. **New Middleware**: Implement custom middleware for additional functionality
-2. **Custom Logging**: Extend the logging system for specific requirements
-3. **Alternative Backends**: Support different types of upstream servers
-4. **Protocol Support**: Add support for additional protocols (WebSockets, HTTP/2, etc.)
+1. **Middleware System**: Can be added to `src/proxy/middleware/`
+2. **Authentication**: Auth utilities can be added to `src/utils/`
+3. **Rate Limiting**: Rate limiting logic can be integrated into request flow
+4. **Connection Pooling**: Upstream connection management can be enhanced
+5. **Protocol Support**: WebSocket tunneling, HTTP/2 support can be added
 
 ## Security Considerations
 
-The proxy server includes several security features:
-
-- **TLS Support**: Via the `rustls` and `tokio-rustls` crates
-- **Authentication**: API key verification in the auth middleware
-- **Rate Limiting**: Prevent abuse through the rate limiting middleware
+- **HTTPS Tunneling**: Raw TCP passthrough maintains end-to-end encryption
+- **Request Validation**: Input validation in utility functions
+- **Error Handling**: Safe error propagation without information leakage
+- **Memory Safety**: Rust's ownership system prevents common security issues

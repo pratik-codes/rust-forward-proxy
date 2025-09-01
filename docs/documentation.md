@@ -1,95 +1,202 @@
-# Rust Forward Proxy Documentation
+# Rust Forward Proxy - Codebase Documentation
 
-This document provides a detailed explanation of the Rust Forward Proxy codebase.
+This document provides comprehensive documentation of the current Rust Forward Proxy codebase structure and implementation.
 
 ## Project Structure
 
-The project is organized into the following modules:
+The project follows a clean, modular architecture with clear separation of concerns:
 
-- **`main.rs`**: The entry point of the application.
-- **`lib.rs`**: The main library crate.
-- **`cli`**: Handles command-line argument parsing.
-- **`config`**: Defines the configuration for the proxy server.
-- **`error`**: Defines the custom error type for the application.
-- **`logging`**: Contains the logging setup and utility functions.
-- **`models`**: Defines the data structures for requests, responses, and logs.
-- **`proxy`**: Contains the core proxy logic.
-  - **`middleware`**: Contains middleware for the proxy server.
-  - **`upstream`**: Contains modules for managing upstream servers.
-- **`utils`**: Contains utility functions.
+```
+rust-forward-proxy/
+├── src/
+│   ├── main.rs                     # Application entry point
+│   ├── lib.rs                      # Library root and exports
+│   ├── cli/                        # Command-line interface
+│   ├── config/                     # Configuration management
+│   │   ├── mod.rs
+│   │   └── settings.rs
+│   ├── error/                      # Error handling
+│   │   └── mod.rs
+│   ├── logging/                    # Logging system
+│   │   └── mod.rs
+│   ├── models/                     # Data structures
+│   │   └── mod.rs
+│   ├── proxy/                      # Core proxy logic
+│   │   ├── server.rs              # Main server (402 lines)
+│   │   ├── middleware/            # Middleware components
+│   │   │   ├── mod.rs
+│   │   │   ├── auth.rs
+│   │   │   ├── logging.rs
+│   │   │   └── rate_limit.rs
+│   │   └── upstream/              # Upstream management
+│   │       ├── mod.rs
+│   │       ├── client.rs
+│   │       ├── connection_pool.rs
+│   │       └── health_check.rs
+│   └── utils/                     # Utility modules (366 lines total)
+│       ├── mod.rs                 # Module exports (11 lines)
+│       ├── http.rs                # HTTP utilities (197 lines)
+│       ├── logging.rs             # Logging utilities (111 lines)
+│       ├── time.rs                # Time utilities (24 lines)
+│       └── url.rs                 # URL utilities (23 lines)
+└── docs/                          # Documentation
+    ├── README.md
+    ├── architecture.md
+    ├── usage.md
+    ├── deployment.md
+    ├── performance.md
+    ├── middleware.md
+    └── upstream.md
+```
 
-## Code Details
+## Core Modules
 
-### `main.rs`
+### 1. `main.rs` - Application Entry Point
 
-The `main.rs` file is the entry point for the `rust-forward-proxy` executable. It performs the following actions:
+**Purpose**: Initializes and starts the proxy server
 
-1.  **Initializes Logging**: It calls `init_logger_with_env()` to set up the logging framework. The log level is determined by the `RUST_LOG` environment variable.
-2.  **Loads Configuration**: It loads the default `ProxyConfig`.
-3.  **Starts the Server**: It creates a new `ProxyServer` instance and starts it. The server listens on the address specified in the configuration.
+**Key Functions**:
+```rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize logging system with environment support
+    init_logger_with_env();
+    
+    // Create and start proxy server
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let server = ProxyServer::new(addr);
+    server.start().await
+}
+```
 
-### `lib.rs`
+### 2. `lib.rs` - Library Root
 
-This file serves as the root of the `rust_forward_proxy` library. It defines the module hierarchy and re-exports key components for easy access from other parts of the application.
+**Purpose**: Defines module hierarchy and exports
 
-### `cli/mod.rs`
+**Exports**:
+- Logging macros: `log_info!`, `log_error!`, `log_debug!`, `log_proxy_transaction!`
+- Re-exports from modules for easy access
 
-This module uses the `clap` crate to parse command-line arguments. The `Cli` struct defines the expected arguments, and the `load_config` function creates a `ProxyConfig` from the parsed arguments.
+### 3. `proxy/server.rs` - Core Server Logic (402 lines)
 
-### `config/settings.rs`
+**Purpose**: Main proxy server implementation with clean, modular handlers
 
-This file defines the `ProxyConfig` and `UpstreamConfig` structs, which hold the configuration for the proxy server. These structs are deserialized from a configuration file (e.g., a TOML or JSON file) and provide a typed way to access configuration settings.
+The server handles two main types of requests:
+- **HTTP Requests**: Fully intercepted, logged, and forwarded
+- **CONNECT Requests**: Tunneled for HTTPS traffic using hyper upgrade mechanism
 
-### `error/mod.rs`
+**Key Architecture Changes**:
+- Moved utility functions to `utils/` modules following DRY principle
+- Clean separation between server logic and utility functions
+- Modular handler functions for different request types
 
-This module defines the `Error` enum, which represents all possible errors that can occur in the application. It uses the `thiserror` crate to derive the `std::error::Error` trait and provide descriptive error messages.
+### 4. `utils/http.rs` - HTTP Utilities (197 lines)
 
-### `logging/mod.rs`
+**Purpose**: Reusable HTTP processing functions moved from server.rs
 
-This module sets up the logging framework for the application using the `tracing` and `log` crates. It provides functions to initialize the logger with different configurations and to log messages at various levels.
+**Key Functions**:
+- `parse_connect_target()` - Parse CONNECT host:port targets
+- `build_error_response()` - Create HTTP error responses
+- `extract_headers()`, `extract_cookies_to_request_data()` - Request parsing
+- `should_extract_body()`, `extract_body()` - Body processing
+- `build_forwarding_request()` - Construct upstream requests
+- `is_hop_by_hop_header()` - Header filtering for proxies
 
-### `models/mod.rs`
+### 5. `utils/logging.rs` - Logging Utilities (111 lines)
 
-This module defines the data models used throughout the application:
+**Purpose**: Consistent logging patterns extracted from server.rs
 
--   **`RequestData`**: Represents an incoming HTTP request, including its method, URL, headers, and body.
--   **`ResponseData`**: Represents an outgoing HTTP response, including its status code, headers, and body.
--   **`ProxyLog`**: A container for a `RequestData` and an optional `ResponseData` or error, used for logging the entire transaction.
+**Features**:
+- Two-tier logging: Clean INFO logs, verbose DEBUG logs
+- Specialized logging for HTTP vs CONNECT requests
+- Transaction logging with structured data
 
-### `proxy/server.rs`
+**Key Functions**:
+- `log_incoming_request()`, `log_forwarding_request()`
+- `log_connect_success()`, `log_connect_failure()`
+- `log_http_success()`, `log_http_failure()`
+- `create_connect_transaction()`
 
-This is the core of the proxy server. The `ProxyServer` struct contains the listening address and a shared logger. The `start` method binds to the specified address and starts listening for incoming connections.
+### 6. `models/mod.rs` - Data Structures (137 lines)
 
-For each incoming request, the `handle_request` function is called. This function:
+**Purpose**: Core data models for requests, responses, and logging
 
-1.  Parses the incoming `hyper::Request`.
-2.  Creates a `RequestData` struct.
-3.  Forwards the request to the upstream server.
-4.  Receives the response from the upstream server.
-5.  Creates a `ResponseData` struct.
-6.  Logs the request and response.
-7.  Sends the response back to the client.
+**Key Structures**:
+- `RequestData` - Complete HTTP request metadata and body
+- `ResponseData` - HTTP response data and timing
+- `ProxyLog` - Transaction container for logging
 
-### `proxy/middleware/`
+**Features**:
+- Support for both HTTP and CONNECT request types
+- Comprehensive metadata extraction
+- JSON serialization for structured logging
 
-This directory contains middleware that can be used to inspect and modify requests and responses.
+### 7. `logging/mod.rs` - Logging System (296 lines)
 
--   **`auth.rs`**: An example of an authentication middleware that checks for an API key in the `Authorization` header.
--   **`logging.rs`**: A middleware for logging requests and responses.
--   **`rate_limit.rs`**: A middleware for rate-limiting requests based on the client's IP address.
+**Purpose**: Production-grade logging setup with environment configuration
 
-### `proxy/upstream/`
+**Features**:
+- Environment variable support (`RUST_LOG`)
+- Integration with `tracing` and `log` crates
+- Console output with structured formatting
+- Bridge between log crate and tracing
 
-This directory contains modules for managing connections to upstream servers.
+### 8. Configuration & Middleware
 
--   **`client.rs`**: An HTTP client for sending requests to upstream servers.
--   **`connection_pool.rs`**: A connection pool for reusing connections to upstream servers.
--   **`health_check.rs`**: A health checker for monitoring the health of upstream servers.
+**Configuration System**:
+- `config/settings.rs` - Server and upstream configuration
+- Environment-based configuration support
 
-### `utils/`
+**Middleware Components**:
+- `middleware/auth.rs` - Authentication middleware
+- `middleware/logging.rs` - Request/response logging
+- `middleware/rate_limit.rs` - Rate limiting by IP
 
-This directory contains various utility functions.
+**Upstream Management**:
+- `upstream/client.rs` - HTTP client for upstream requests
+- `upstream/connection_pool.rs` - Connection pooling
+- `upstream/health_check.rs` - Health monitoring
 
--   **`http.rs`**: Functions for working with HTTP headers, such as checking for hop-by-hop headers.
--   **`url.rs`**: Functions for parsing and manipulating URLs.
--   **`time.rs`**: Functions for working with timestamps and durations.
+## Current Implementation Status
+
+### ✅ **Fully Implemented & Working**
+
+1. **HTTP Request Interception**
+   - Complete request/response logging
+   - Header extraction and processing
+   - Body extraction for POST/PUT/PATCH
+   - Cookie parsing and form data handling
+
+2. **HTTPS CONNECT Tunneling**
+   - Proper CONNECT method handling
+   - Hyper upgrade mechanism for tunneling
+   - Bidirectional TCP data forwarding
+   - Raw encrypted traffic passthrough
+
+3. **Modular Architecture**
+   - Clean separation of concerns
+   - DRY principle implementation
+   - Utility functions properly organized
+   - Reusable components across modules
+
+4. **Production Logging**
+   - Two-tier logging system (INFO/DEBUG)
+   - Environment-based configuration
+   - Structured transaction logging
+   - Clean console output
+
+### 🔄 **Framework Ready for Extension**
+
+1. **Middleware System** - Framework exists, ready for custom middleware
+2. **Connection Pooling** - Structure in place, can be enhanced
+3. **Health Checking** - Basic framework for upstream monitoring
+4. **Authentication** - Middleware structure ready for auth logic
+
+### 📊 **Code Organization**
+
+- **Server Logic**: 402 lines (down from 623) - focused on core functionality
+- **HTTP Utilities**: 197 lines - reusable HTTP processing functions
+- **Logging Utilities**: 111 lines - consistent logging patterns
+- **Total Utils**: 366 lines - well-organized utility modules
+
+This architecture provides a solid foundation for a production-ready HTTP/HTTPS forward proxy with excellent maintainability and extensibility.
