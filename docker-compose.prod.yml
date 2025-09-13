@@ -1,0 +1,56 @@
+# Production Docker Compose Override
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+version: '3.8'
+
+services:
+  redis:
+    # Production Redis optimizations
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
+        reservations:
+          memory: 512M
+          cpus: "0.25"
+    # Remove port exposure for security (internal only)
+    ports: []
+    # Additional production configs
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    sysctls:
+      - net.core.somaxconn=65535
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+  rust-proxy:
+    # Production optimizations
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+          cpus: "0.5"
+    # Production environment variables
+    environment:
+      - RUST_LOG=warn  # Less verbose logging in production
+      - PROXY_LISTEN_ADDR=0.0.0.0:8080
+      - REDIS_URL=redis://${REDIS_USERNAME:-}${REDIS_PASSWORD:+:${REDIS_PASSWORD}}@redis:6379/${REDIS_DB:-0}
+    # Production volume mounts
+    volumes:
+      - ./logs:/app/logs:rw
+    # Restart policy
+    restart: always
+    # Security
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE

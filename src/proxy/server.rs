@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 use tracing::{error, info};
 use hyper::upgrade::{Upgraded, on};
 use futures::future::try_join;
+use serde_json::json;
 
 
 pub struct ProxyServer {
@@ -68,6 +69,11 @@ async fn handle_request(
     // Log incoming request
     log_incoming_request(&method, &uri, &remote_addr);
 
+    // Handle health check endpoint locally (don't forward to upstream)
+    if req.uri().path() == "/health" {
+        return handle_health_check(method, start_time).await;
+    }
+
     // Create request data structure
     let mut request_data = RequestData::new(
         method.clone(),
@@ -88,6 +94,45 @@ async fn handle_request(
         
         // Handle regular HTTP requests with full interception
         handle_http_request(request_data, method, start_time).await
+    }
+}
+
+/// Handle health check endpoint locally
+async fn handle_health_check(
+    method: String,
+    start_time: std::time::Instant,
+) -> Result<Response<Body>, Infallible> {
+    let elapsed_time = start_time.elapsed().as_millis();
+    
+    if method == "GET" {
+        // Create health response
+        let health_data = json!({
+            "status": "healthy",
+            "service": "rust-forward-proxy",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "uptime_ms": elapsed_time,
+            "version": env!("CARGO_PKG_VERSION")
+        });
+        
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .header("cache-control", "no-cache")
+            .body(Body::from(health_data.to_string()))
+            .unwrap();
+            
+        log_info!("✅ GET /health → 200 OK ({}ms)", elapsed_time);
+        Ok(response)
+    } else {
+        // Health endpoint only supports GET
+        let response = Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header("allow", "GET")
+            .body(Body::from("Method Not Allowed"))
+            .unwrap();
+            
+        log_info!("❌ {} /health → 405 Method Not Allowed ({}ms)", method, elapsed_time);
+        Ok(response)
     }
 }
 

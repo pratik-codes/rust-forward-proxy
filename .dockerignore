@@ -1,0 +1,41 @@
+# Rust artifacts
+target/
+Cargo.lock
+
+# Development files
+.git/
+.gitignore
+*.md
+docs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Test files
+tests/
+
+# Docker files
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Environment files (will be handled separately)
+.env*
+
+# Scripts (copy selectively if needed)
+scripts/
+
+# Dependencies that will be downloaded during build
+!Cargo.toml
+!Cargo.lock

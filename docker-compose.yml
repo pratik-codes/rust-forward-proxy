@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # Redis service
+  redis:
+    image: redis:7.2-alpine
+    container_name: rust-proxy-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: >
+      sh -c '
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes
+        else
+          redis-server --appendonly yes
+        fi
+      '
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - proxy-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+
+  # Rust Forward Proxy service
+  rust-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rust-forward-proxy
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-8080}:8080"
+    environment:
+      # Redis configuration
+      - REDIS_URL=redis://${REDIS_USERNAME:-}${REDIS_PASSWORD:+:${REDIS_PASSWORD}}@redis:6379/${REDIS_DB:-0}
+      
+      # Proxy configuration
+      - PROXY_LISTEN_ADDR=0.0.0.0:8080
+      - RUST_LOG=${LOG_LEVEL:-info}
+      - PROXY_REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
+      - PROXY_MAX_BODY_SIZE=${MAX_BODY_SIZE:-1048576}
+      
+      # Upstream configuration
+      - UPSTREAM_URL=${UPSTREAM_URL:-http://httpbin.org}
+      - UPSTREAM_CONNECT_TIMEOUT=${UPSTREAM_CONNECT_TIMEOUT:-5}
+      - UPSTREAM_KEEP_ALIVE_TIMEOUT=${UPSTREAM_KEEP_ALIVE_TIMEOUT:-60}
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - proxy-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  proxy-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
