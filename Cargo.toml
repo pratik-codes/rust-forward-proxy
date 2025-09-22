@@ -1,7 +1,7 @@
 [package]
 name = "rust-forward-proxy"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 # Async runtime
@@ -12,20 +12,22 @@ hyper = { version = "0.14", features = ["full", "server", "client"] }
 
 # Additional support for proxying
 futures = "0.3"
+bytes = "1.0"
 
 # Serialization for logging
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # SSL/TLS support
-rustls = "0.21"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
 tokio-rustls = "0.24"
+hyper-rustls = "0.24"
 
 # URL parsing
 url = "2.4"
 
 # Date/time handling
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4.11", features = ["serde"] }
 
 # Error handling
 anyhow = "1.0"
@@ -41,4 +43,33 @@ tracing-log = "0.1" # Bridge log events to tracing
 form_urlencoded = "1.2"
 
 # Redis support
-redis = { version = "0.23", features = ["tokio-comp"] }
+redis = { version = "0.21", features = ["tokio-comp"], optional = true }
+
+# Certificate generation
+rcgen = "0.10"
+base64 = "0.21"
+
+# System certificate loading
+rustls-native-certs = "0.7"
+rustls-pemfile = "1.0"
+
+# CLI argument parsing
+clap = { version = "4.0", features = ["derive"] }
+
+# Temporary directory for testing
+tempfile = "3.5"
+
+# Serialization for certificate caching
+bincode = "1.3"
+
+[features]
+default = ["redis-support"]
+redis-support = ["redis"]
+
+[[bin]]
+name = "rust-forward-proxy"
+path = "src/main.rs"
+
+[[bin]]
+name = "rust-forward-proxy-cli"
+path = "src/main_cli.rs"

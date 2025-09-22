@@ -99,6 +99,111 @@ dev-rebuild: ## Rebuild and start development environment
 	@echo "$(BLUE)Rebuilding development environment...$(NC)"
 	$(DOCKER_COMPOSE) up --build --force-recreate
 
+.PHONY: dev-local
+dev-local: ## Start development server locally without Docker or Redis
+	@echo "$(BLUE)Starting local development server (no Docker, no Redis)...$(NC)"
+	@if [ ! -f .env ]; then \
+		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
+		cp env.example .env; \
+		echo "$(GREEN)✅ Created .env file$(NC)"; \
+	fi
+	@mkdir -p logs
+	@echo "$(GREEN)🚀 Starting local proxy server...$(NC)"
+	@echo "$(CYAN)Environment: Local development (no Docker, no Redis)$(NC)"
+	@echo "$(CYAN)Proxy will be available at: http://127.0.0.1:8080$(NC)"
+	@echo "$(CYAN)Test with: curl -x http://127.0.0.1:8080 http://httpbin.org/get$(NC)"
+	@PROXY_LISTEN_ADDR=127.0.0.1:8080 \
+	 UPSTREAM_URL=http://httpbin.org \
+	 TLS_ENABLED=false \
+	 RUST_LOG=info \
+	 cargo run --bin rust-forward-proxy --no-default-features
+
+.PHONY: dev-local-intercept
+dev-local-intercept: ## Start local server with HTTPS interception (logs all HTTP/HTTPS content)
+	@echo "$(BLUE)Starting local development server with HTTPS interception...$(NC)"
+	@if [ ! -f .env ]; then \
+		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
+		cp env.example .env; \
+		echo "$(GREEN)✅ Created .env file$(NC)"; \
+	fi
+	@mkdir -p logs certs
+	@echo "$(GREEN)🔒 Starting proxy with HTTPS interception...$(NC)"
+	@echo "$(CYAN)Environment: Local development with HTTPS interception$(NC)"
+	@echo "$(CYAN)Proxy: http://127.0.0.1:8080$(NC)"
+	@echo "$(CYAN)🔍 HTTP requests: Full content logging$(NC)"
+	@echo "$(CYAN)🔍 HTTPS requests: Intercepted and fully logged!$(NC)"
+	@echo "$(YELLOW)⚠️  Browser will show certificate warnings (normal for self-signed certs)$(NC)"
+	@echo "$(CYAN)Test HTTP: curl -x http://127.0.0.1:8080 http://httpbin.org/get$(NC)"
+	@echo "$(CYAN)Test HTTPS: curl -x http://127.0.0.1:8080 https://httpbin.org/get --proxy-insecure$(NC)"
+	@PROXY_LISTEN_ADDR=127.0.0.1:8080 \
+	 HTTPS_INTERCEPTION_ENABLED=true \
+	 TLS_ENABLED=false \
+	 UPSTREAM_URL=http://httpbin.org \
+	 RUST_LOG=info \
+	 cargo run --bin rust-forward-proxy --no-default-features
+
+.PHONY: setup-ca
+setup-ca: ## Generate root CA certificate for browser installation
+	@echo "$(BLUE)Setting up Root CA for HTTPS Interception...$(NC)"
+	@./scripts/setup_ca.sh
+	@echo ""
+	@echo "$(GREEN)📖 Next steps: See BROWSER_SETUP.md for complete browser configuration guide$(NC)"
+
+.PHONY: browser-help
+browser-help: ## Show browser setup instructions
+	@echo "$(GREEN)🌐 Browser HTTPS Interception Setup$(NC)"
+	@echo "======================================"
+	@echo ""
+	@echo "$(CYAN)Quick Setup:$(NC)"
+	@echo "1. $(YELLOW)make setup-ca$(NC)                    # Generate root certificate"
+	@echo "2. Install certificate in browser    # See BROWSER_SETUP.md" 
+	@echo "3. Configure proxy: 127.0.0.1:8080   # In browser settings"
+	@echo "4. $(YELLOW)make dev-local-intercept$(NC)          # Start intercepting proxy"
+	@echo ""
+	@echo "$(GREEN)📖 Complete guide: BROWSER_SETUP.md$(NC)"
+	@echo ""
+
+.PHONY: cache-help
+cache-help: ## Show certificate caching information
+	@echo "$(GREEN)🔒 Certificate Caching System$(NC)"
+	@echo "==============================="
+	@echo ""
+	@echo "$(CYAN)Performance Benefits:$(NC)"
+	@echo "• First request:  Generate certificate (~10ms)"
+	@echo "• Later requests: Use cached cert (<1ms)"
+	@echo "• 25-30x faster HTTPS interception!"
+	@echo ""
+	@echo "$(CYAN)Cache Backends:$(NC)"
+	@echo "• $(YELLOW)Local dev$(NC):  In-memory cache (1000 certs max)"
+	@echo "• $(YELLOW)Docker$(NC):     Redis cache (unlimited, shared)"
+	@echo ""
+	@echo "$(CYAN)Commands:$(NC)"
+	@echo "• $(YELLOW)make dev-local-intercept$(NC)  # Test with memory cache"
+	@echo "• $(YELLOW)make dev$(NC)                  # Test with Redis cache"
+	@echo "• $(YELLOW)make cache-clear-redis$(NC)    # Clear Redis certificate cache"
+	@echo ""
+	@echo "$(GREEN)📖 Full documentation: CERTIFICATE_CACHING.md$(NC)"
+	@echo ""
+
+.PHONY: cache-clear-redis
+cache-clear-redis: ## Clear Redis certificate cache
+	@echo "$(BLUE)Clearing Redis certificate cache...$(NC)"
+	@if command -v redis-cli >/dev/null 2>&1; then \
+		if redis-cli ping >/dev/null 2>&1; then \
+			KEYS=$$(redis-cli --scan --pattern "proxy:cert:*" | wc -l); \
+			if [ "$$KEYS" -gt 0 ]; then \
+				redis-cli --scan --pattern "proxy:cert:*" | xargs redis-cli del; \
+				echo "$(GREEN)✅ Cleared $$KEYS cached certificates$(NC)"; \
+			else \
+				echo "$(YELLOW)ℹ️  No certificates found in Redis cache$(NC)"; \
+			fi; \
+		else \
+			echo "$(RED)❌ Redis server not running$(NC)"; \
+		fi; \
+	else \
+		echo "$(RED)❌ redis-cli not found. Install Redis tools first.$(NC)"; \
+	fi
+
 # =================================================
 # PRODUCTION COMMANDS
 # =================================================
@@ -199,6 +304,38 @@ test-redis: ## Test Redis connection
 
 .PHONY: test-all
 test-all: test test-redis ## Run all tests
+
+.PHONY: test-local
+test-local: ## Test local proxy without Docker
+	@echo "$(BLUE)Testing local proxy (no Docker)...$(NC)"
+	@echo "$(YELLOW)Make sure 'make dev-local' is running in another terminal first$(NC)"
+	@if curl -s -f --max-time 10 -x http://127.0.0.1:8080 http://httpbin.org/get > /dev/null; then \
+		echo "$(GREEN)✅ Local proxy test passed$(NC)"; \
+	else \
+		echo "$(RED)❌ Local proxy test failed$(NC)"; \
+		echo "$(YELLOW)💡 Make sure to run 'make dev-local' in another terminal first$(NC)"; \
+		exit 1; \
+	fi
+
+.PHONY: test-intercept
+test-intercept: ## Test HTTPS interception proxy
+	@echo "$(BLUE)Testing HTTPS interception proxy...$(NC)"
+	@echo "$(YELLOW)Make sure 'make dev-local-intercept' is running in another terminal first$(NC)"
+	@echo "$(CYAN)Testing HTTP request...$(NC)"
+	@if curl -s -f --max-time 10 -x http://127.0.0.1:8080 http://httpbin.org/get > /dev/null; then \
+		echo "$(GREEN)✅ HTTP test passed$(NC)"; \
+	else \
+		echo "$(RED)❌ HTTP test failed$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(CYAN)Testing HTTPS request (with interception)...$(NC)"
+	@if curl -s -f --max-time 10 --proxy-insecure -x http://127.0.0.1:8080 https://httpbin.org/get > /dev/null; then \
+		echo "$(GREEN)✅ HTTPS interception test passed$(NC)"; \
+		echo "$(GREEN)🔍 Check proxy logs - you should see detailed HTTP/HTTPS content!$(NC)"; \
+	else \
+		echo "$(RED)❌ HTTPS interception test failed$(NC)"; \
+		exit 1; \
+	fi
 
 # =================================================
 # MAINTENANCE COMMANDS

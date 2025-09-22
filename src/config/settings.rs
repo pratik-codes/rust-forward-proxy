@@ -23,6 +23,9 @@ pub struct ProxyConfig {
     
     /// Maximum request body size in bytes
     pub max_body_size: usize,
+    
+    /// TLS configuration for HTTPS interception
+    pub tls: TlsConfig,
 }
 
 /// Upstream server configuration
@@ -54,6 +57,43 @@ pub struct RedisConfig {
     pub command_timeout: u64,
 }
 
+/// TLS configuration for HTTPS interception
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Enable TLS server (HTTPS proxy)
+    pub enabled: bool,
+    
+    /// HTTPS listening address (separate from HTTP)
+    pub https_listen_addr: SocketAddr,
+    
+    /// Path to TLS certificate file (.pem or .crt)
+    pub cert_path: String,
+    
+    /// Path to TLS private key file (.pem or .key)
+    pub key_path: String,
+    
+    /// Enable HTTPS interception (decrypt and re-encrypt)
+    pub interception_enabled: bool,
+    
+    /// Generate self-signed certificate if cert files don't exist
+    pub auto_generate_cert: bool,
+    
+    /// Certificate organization name for auto-generated certs
+    pub cert_organization: String,
+    
+    /// Certificate common name (hostname) for auto-generated certs
+    pub cert_common_name: String,
+    
+    /// Certificate validity period in days
+    pub cert_validity_days: u32,
+    
+    /// Minimum TLS version (1.2 or 1.3)
+    pub min_tls_version: String,
+    
+    /// Skip upstream certificate verification (for testing)
+    pub skip_upstream_cert_verify: bool,
+}
+
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
@@ -63,6 +103,7 @@ impl Default for ProxyConfig {
             redis: RedisConfig::default(),
             request_timeout: 30,
             max_body_size: 1024 * 1024, // 1MB
+            tls: TlsConfig::default(),
         }
     }
 }
@@ -85,6 +126,24 @@ impl Default for RedisConfig {
             pool_size: 10,
             connection_timeout: 5,
             command_timeout: 10,
+        }
+    }
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, // Disabled by default for backward compatibility
+            https_listen_addr: "127.0.0.1:8443".parse().unwrap(),
+            cert_path: "certs/proxy.crt".to_string(),
+            key_path: "certs/proxy.key".to_string(),
+            interception_enabled: true, // Enable interception when TLS is enabled
+            auto_generate_cert: true, // Auto-generate for development
+            cert_organization: "Rust Forward Proxy".to_string(),
+            cert_common_name: "proxy.local".to_string(),
+            cert_validity_days: 365,
+            min_tls_version: "1.2".to_string(),
+            skip_upstream_cert_verify: false, // Verify upstream certs by default
         }
     }
 }

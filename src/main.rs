@@ -5,6 +5,7 @@ use rust_forward_proxy::{
     log_info,
     ProxyServer,
     ProxyConfig,
+    tls::start_dual_servers,
 };
 
 /// Load configuration from environment variables with fallback to defaults
@@ -52,6 +53,33 @@ fn load_config_from_env() -> ProxyConfig {
         }
     }
     
+    // TLS configuration from environment
+    if let Ok(tls_enabled) = env::var("TLS_ENABLED") {
+        config.tls.enabled = tls_enabled.parse().unwrap_or(false);
+    }
+    
+    if let Ok(https_addr) = env::var("HTTPS_LISTEN_ADDR") {
+        if let Ok(addr) = https_addr.parse() {
+            config.tls.https_listen_addr = addr;
+        }
+    }
+    
+    if let Ok(cert_path) = env::var("TLS_CERT_PATH") {
+        config.tls.cert_path = cert_path;
+    }
+    
+    if let Ok(key_path) = env::var("TLS_KEY_PATH") {
+        config.tls.key_path = key_path;
+    }
+    
+    if let Ok(auto_gen) = env::var("TLS_AUTO_GENERATE_CERT") {
+        config.tls.auto_generate_cert = auto_gen.parse().unwrap_or(true);
+    }
+    
+    if let Ok(interception) = env::var("TLS_INTERCEPTION_ENABLED") {
+        config.tls.interception_enabled = interception.parse().unwrap_or(true);
+    }
+    
     config
 }
 
@@ -69,14 +97,38 @@ async fn main() -> anyhow::Result<()> {
     
     // Log startup information
     log_info!("Proxy server starting on {}", config.listen_addr);
+    if config.tls.enabled {
+        log_info!("HTTPS proxy server starting on {}", config.tls.https_listen_addr);
+        log_info!("TLS interception: {}", if config.tls.interception_enabled { "ENABLED" } else { "DISABLED" });
+    }
     log_info!("Console-only logging enabled");
 
-    // Create and start server
-    let server = ProxyServer::new(config.listen_addr);
-
-    log_info!("Test with: curl -x http://127.0.0.1:8080 http://httpbin.org/get");
-
-    server.start().await?;
+    if config.tls.enabled {
+        // Start both HTTP and HTTPS servers
+        log_info!("🚀 Starting dual HTTP/HTTPS proxy servers");
+        log_info!("Test HTTP: curl -x http://127.0.0.1:8080 http://httpbin.org/get");
+        log_info!("Test HTTPS: curl -x https://127.0.0.1:8443 https://httpbin.org/get");
+        
+        start_dual_servers(config).await?;
+    } else {
+        // Start only HTTP server
+        log_info!("🌐 Starting HTTP-only proxy server (TLS disabled)");
+        log_info!("Test with: curl -x http://127.0.0.1:8080 http://httpbin.org/get");
+        
+        // Check if HTTPS interception is enabled via environment variable
+        let https_interception = std::env::var("HTTPS_INTERCEPTION_ENABLED")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse()
+            .unwrap_or(false);
+        
+        if https_interception {
+            log_info!("🔍 HTTPS interception enabled - CONNECT requests to port 443 will be intercepted");
+            log_info!("⚠️  Clients will see certificate warnings (normal for self-signed certs)");
+        }
+        
+        let server = ProxyServer::with_https_interception(config.listen_addr, true);
+        server.start().await?;
+    }
 
     Ok(())
 }
