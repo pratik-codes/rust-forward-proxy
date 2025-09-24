@@ -23,6 +23,40 @@ pub fn is_hop_by_hop_header(name: &str) -> bool {
     hop_by_hop_headers.contains(&name.to_lowercase().as_str())
 }
 
+/// Check if a request header should be forwarded to upstream server
+/// This function consolidates all header filtering logic for requests
+pub fn should_forward_request_header(name: &str) -> bool {
+    let name_lower = name.to_lowercase();
+    
+    // Skip hop-by-hop headers and problematic headers that might cause 400 errors
+    !is_hop_by_hop_header(&name_lower) 
+        && name_lower != "host"                   // Will be set explicitly by proxy
+        && name_lower != "content-length"         // Will be set explicitly by proxy to avoid duplicates
+        && name_lower != "x-forwarded-for"        // Proxy will handle forwarding headers
+        && name_lower != "x-forwarded-proto"      // Proxy will handle forwarding headers
+        && name_lower != "x-real-ip"              // Proxy will handle real IP
+        && name_lower != "rtt"                    // Network timing hint
+        && name_lower != "downlink"               // Network speed hint  
+        && name_lower != "priority"               // Browser priority hint
+        && name_lower != "ect"                    // Effective connection type hint
+        && !name_lower.starts_with("x-browser-") // Chrome browser headers
+        && !name_lower.starts_with("sec-ch-ua")  // Chrome Client Hints
+        && !name_lower.starts_with("sec-ch-prefers") // Chrome preference hints
+        && name_lower != "x-client-data"          // Chrome telemetry data
+        && name_lower != "sec-fetch-dest"         // Browser security hint
+        && name_lower != "sec-fetch-mode"         // Browser security hint
+        && name_lower != "sec-fetch-site"         // Browser security hint
+        && name_lower != "sec-fetch-user"         // Browser security hint
+        && name_lower != "upgrade-insecure-requests" // Browser security hint
+        && name_lower != "sec-fetch-storage-access" // Browser security hint
+}
+
+/// Check if a response header should be forwarded to client
+/// For now, this only filters hop-by-hop headers, but can be extended
+pub fn should_forward_response_header(name: &str) -> bool {
+    !is_hop_by_hop_header(name)
+}
+
 /// Convert HeaderMap to HashMap<String, String>
 pub fn headers_to_map(headers: &HeaderMap) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -103,6 +137,40 @@ pub fn build_error_response(status: StatusCode, message: &str) -> Response<Body>
         .unwrap()
 }
 
+/// Build error response with specific content type
+pub fn build_error_response_with_type(status: StatusCode, message: &str, content_type: &str) -> Response<Body> {
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(Body::from(message.to_string()))
+        .unwrap()
+}
+
+/// Build a formatted error response for proxy errors
+pub fn build_proxy_error_response(message: &str) -> Response<Body> {
+    build_error_response_with_type(
+        StatusCode::BAD_GATEWAY,
+        &format!("Proxy Error: {}", message),
+        "text/plain"
+    )
+}
+
+/// Build response with headers
+pub fn build_response_with_headers(
+    status: StatusCode,
+    headers: &[(String, String)],
+    body: Body,
+) -> Result<Response<Body>, hyper::http::Error> {
+    let mut response_builder = Response::builder().status(status);
+    
+    // Add provided headers
+    for (name, value) in headers {
+        response_builder = response_builder.header(name, value);
+    }
+    
+    response_builder.body(body)
+}
+
 /// Extract headers from request and populate RequestData
 pub fn extract_headers(req_headers: &HeaderMap, request_data: &mut RequestData) {
     let mut header_count = 0;
@@ -175,18 +243,18 @@ pub fn build_forwarding_request(request_data: &RequestData) -> Result<Request<Bo
         .method(request_data.method.as_str())
         .uri(&request_data.url);
 
-    // Add headers (excluding hop-by-hop headers)
+    // Add headers using comprehensive filtering logic
     let mut forwarded_headers = 0;
     let mut skipped_headers = 0;
     for (name, value) in &request_data.headers {
-        if !is_hop_by_hop_header(name) {
+        if should_forward_request_header(name) {
             request_builder = request_builder.header(name, value);
             forwarded_headers += 1;
         } else {
             skipped_headers += 1;
         }
     }
-    debug!("Header forwarding: {} forwarded, {} skipped (hop-by-hop)", 
+    debug!("Header forwarding: {} forwarded, {} skipped (filtered)", 
                forwarded_headers, skipped_headers);
 
     // Build the request

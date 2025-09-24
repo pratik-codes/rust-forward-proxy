@@ -2,7 +2,7 @@
 
 use crate::models::{ProxyLog, RequestData, ResponseData};
 use crate::{log_info, log_error, log_debug, log_proxy_transaction};
-use crate::utils::{is_hop_by_hop_header, parse_url, extract_path, extract_query, is_https, parse_connect_target, build_error_response, extract_headers, extract_cookies_to_request_data, should_extract_body, extract_body, build_forwarding_request, log_incoming_request, log_connect_request, log_http_success, log_http_failure, log_forwarding_request, log_headers_structured, log_response_headers_structured};
+use crate::utils::{is_hop_by_hop_header, parse_url, extract_path, extract_query, is_https, parse_connect_target, build_error_response, build_proxy_error_response, extract_headers, extract_cookies_to_request_data, should_extract_body, extract_body, build_forwarding_request, log_incoming_request, log_connect_request, log_http_success, log_http_failure, log_forwarding_request, log_headers_structured, log_response_headers_structured, should_forward_request_header, should_forward_response_header};
 use crate::tls::{generate_domain_cert_with_ca, create_server_config, CertificateManager};
 use crate::proxy::http_client::HttpClient;
 use crate::proxy::streaming::SmartBodyHandler;
@@ -382,10 +382,7 @@ async fn handle_intercepted_request(
         Err(e) => {
             error!("Failed to read request body: {}", e);
             // Return a simple error response instead of trying to convert error types
-            return Ok(Response::builder()
-                .status(400)
-                .body(Body::from(format!("Error reading request body: {}", e)))
-                .unwrap());
+            return Ok(build_error_response(StatusCode::BAD_REQUEST, &format!("Error reading request body: {}", e)));
         }
     };
     
@@ -424,11 +421,7 @@ async fn handle_intercepted_request(
             error!("❌ INTERCEPTED {} {} → ERROR: {} (failed in {:.2} ms)", 
                    method, path, e, total_time.as_secs_f64() * 1000.0);
             
-            let error_response = Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .header("Content-Type", "text/plain")
-                .body(Body::from(format!("Interception Error: {}", e)))
-                .unwrap();
+            let error_response = build_proxy_error_response(&format!("Interception Error: {}", e));
             
             Ok(error_response)
         }
@@ -471,28 +464,8 @@ async fn forward_intercepted_request_direct(
     let mut skipped_headers = 0;
     
     for (name, value) in &headers {
-        let name_str = name.as_str().to_lowercase();
-        
-        // Skip hop-by-hop headers and problematic headers that might cause 400 errors
-        if !is_hop_by_hop_header(&name_str) 
-            && name_str != "host"                   // Will be set explicitly below
-            && name_str != "x-forwarded-for"
-            && name_str != "x-forwarded-proto"
-            && name_str != "x-real-ip"
-            && name_str != "rtt"                    // Network timing hint
-            && name_str != "downlink"               // Network speed hint  
-            && name_str != "priority"               // Browser priority hint
-            && name_str != "ect"                    // Effective connection type hint
-            && !name_str.starts_with("x-browser-") // Chrome browser headers
-            && !name_str.starts_with("sec-ch-ua")  // Chrome Client Hints
-            && !name_str.starts_with("sec-ch-prefers") // Chrome preference hints
-            && name_str != "x-client-data"          // Chrome telemetry data
-            && name_str != "sec-fetch-dest"         // Browser security hint
-            && name_str != "sec-fetch-mode"         // Browser security hint
-            && name_str != "sec-fetch-site"         // Browser security hint
-            && name_str != "sec-fetch-user"         // Browser security hint
-            && name_str != "upgrade-insecure-requests" // Browser security hint
-            && name_str != "sec-fetch-storage-access" { // Browser security hint
+        // Use centralized header filtering logic
+        if should_forward_request_header(name.as_str()) {
             request_builder = request_builder.header(name, value);
             forwarded_headers += 1;
         } else {
@@ -511,10 +484,8 @@ async fn forward_intercepted_request_direct(
         request_builder = request_builder.header("user-agent", "Mozilla/5.0 (compatible; RustProxy/1.0)");
     }
     
-    // Set proper content-length for body if we have a body
-    if !body_bytes.is_empty() {
-        request_builder = request_builder.header("content-length", body_bytes.len().to_string());
-    }
+    // Always set proper content-length header to avoid duplicates and ensure correctness
+    request_builder = request_builder.header("content-length", body_bytes.len().to_string());
     
     let body_size = body_bytes.len();
     let request = request_builder.body(Body::from(body_bytes))?;
@@ -714,7 +685,7 @@ async fn handle_regular_request(request_data: &mut RequestData, client_manager: 
             let mut skipped_response_headers = 0;
             for (name, value) in response.headers() {
                 let name_str = name.as_str();
-                if !is_hop_by_hop_header(name_str) {
+                if should_forward_response_header(name_str) {
                     if let Ok(value_str) = value.to_str() {
                         response_headers.push((name_str.to_string(), value_str.to_string()));
                     }
@@ -762,10 +733,7 @@ async fn handle_regular_request(request_data: &mut RequestData, client_manager: 
                 .body(Body::from(response_data.body))
                 .unwrap_or_else(|_| {
                     log_error!("Failed to build response body");
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Failed to build response"))
-                        .unwrap()
+                    build_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response")
                 }))
         }
         Err(e) => {
@@ -791,11 +759,7 @@ async fn handle_regular_request(request_data: &mut RequestData, client_manager: 
             // Log the error to file
             log_proxy_transaction!(&log_entry);
 
-            Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .header("Content-Type", "text/plain")
-                .body(Body::from(format!("Proxy Error: {}", e)))
-                .unwrap())
+            Ok(build_proxy_error_response(&e.to_string()))
         }
     }
 }

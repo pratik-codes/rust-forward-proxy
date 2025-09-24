@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
+use crate::utils::{parse_url, extract_path, extract_query, is_https};
 
 // Core data extracted from an HTTP request
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,11 +83,28 @@ pub struct ProxyLog {
 impl RequestData {
     // Create a new RequestData from basic components
     pub fn new(method: String, url: String, client_ip: IpAddr, client_port: u16) -> Self {
+        // Extract URL components using centralized utility functions
+        let (path, query_string, is_https_url) = if url.contains(':') && !url.starts_with("http://") && !url.starts_with("https://") {
+            // CONNECT request format (host:port)
+            ("".to_string(), None, true)
+        } else {
+            // Regular URL
+            if let Ok(parsed_url) = parse_url(&url) {
+                (
+                    extract_path(&parsed_url),
+                    extract_query(&parsed_url),
+                    is_https(&parsed_url)
+                )
+            } else {
+                ("/".to_string(), None, url.starts_with("https://"))
+            }
+        };
+
         Self {
             method,
             url: url.clone(),
-            path: Self::extract_path(&url),
-            query_string: Self::extract_query(&url),
+            path,
+            query_string,
             http_version: "HTTP/1.1".to_string(),
             client_ip,
             client_port,
@@ -101,36 +119,8 @@ impl RequestData {
             host: None,
             body: Vec::new(),
             form_data: HashMap::new(),
-            is_https: url.starts_with("https://") || (url.contains(':') && !url.starts_with("http://")),
+            is_https: is_https_url,
             protocol: "HTTP/1.1".to_string(),
-        }
-    }
-
-    // Extract path from URL
-    fn extract_path(url: &str) -> String {
-        // For CONNECT requests, the URL is host:port format, not a proper URL
-        if url.contains(':') && !url.starts_with("http://") && !url.starts_with("https://") {
-            return "".to_string(); // CONNECT doesn't have a path
-        }
-        
-        if let Ok(parsed) = url::Url::parse(url) {
-            parsed.path().to_string()
-        } else {
-            "/".to_string()
-        }
-    }
-
-    // Extract query string from URL
-    fn extract_query(url: &str) -> Option<String> {
-        // For CONNECT requests, the URL is host:port format, not a proper URL
-        if url.contains(':') && !url.starts_with("http://") && !url.starts_with("https://") {
-            return None; // CONNECT doesn't have query params
-        }
-        
-        if let Ok(parsed) = url::Url::parse(url) {
-            parsed.query().map(|q| q.to_string())
-        } else {
-            None
         }
     }
 }
