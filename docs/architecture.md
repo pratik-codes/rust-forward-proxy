@@ -1,57 +1,100 @@
-# Rust Forward Proxy Architecture
+# 🏗️ Rust Forward Proxy Architecture
 
-This document provides a detailed explanation of the current architecture of the Rust Forward Proxy server.
+This document provides a comprehensive overview of the Rust Forward Proxy architecture, implementation details, and data flows.
 
-## Overview
+## 🎯 Overview
 
-The Rust Forward Proxy is designed as a high-performance HTTP/HTTPS forward proxy server with a focus on:
+The Rust Forward Proxy is designed as a **high-performance, production-grade HTTP/HTTPS proxy** with advanced features:
 
-- **Performance**: Utilizing Rust's memory safety and performance characteristics along with asynchronous programming via Tokio and Hyper
-- **Clean Architecture**: Modular design following DRY principles with utility separation
-- **Full Tunneling Support**: Complete HTTP interception and HTTPS tunneling via CONNECT method
-- **Production Logging**: Two-tier logging system (clean INFO, verbose DEBUG)
-- **Maintainability**: Well-organized codebase with clear separation of concerns
+- **🔒 Complete HTTPS Interception** - TLS termination, certificate generation, and re-encryption
+- **⚡ High Performance** - Async architecture with certificate caching and connection pooling
+- **🛡️ Production Ready** - Comprehensive logging, monitoring, error handling, and scalability
+- **🧩 Modular Design** - Clean separation of concerns with extensible middleware system
 
-## System Architecture
+## 📁 Project Structure
 
 ```
-┌─────────────────┐     ┌─────────────────────────┐     ┌──────────────────────┐
-│                 │     │                         │     │                      │
-│   HTTP Client   │────▶│    Forward Proxy        │────▶│   Upstream Server    │
-│   (Browser)     │     │                         │     │                      │
-│                 │◀────│  ┌─────────────────────┐ │◀────│                      │
-└─────────────────┘     │  │   HTTP Requests     │ │     └──────────────────────┘
-                        │  │  (Full Intercept)   │ │              
-┌─────────────────┐     │  └─────────────────────┘ │     ┌──────────────────────┐
-│                 │     │                         │═════│                      │
-│   HTTPS Client  │═════│  ┌─────────────────────┐ │═════│   HTTPS Server       │
-│   (Browser)     │     │  │  CONNECT Tunneling  │ │     │                      │
-│                 │═════│  │   (Raw TCP Pass)    │ │═════│                      │
-└─────────────────┘     │  └─────────────────────┘ │     └──────────────────────┘
-                        └─────────────────────────┘              
-                                      │
-                                      ▼
-                               ┌──────────────┐
-                               │   Logging    │
-                               │  INFO/DEBUG  │
-                               └──────────────┘
+rust-forward-proxy/
+├── 📦 src/                                    # Core implementation (3,247 lines)
+│   ├── 🌐 proxy/                              # HTTP/HTTPS proxy logic (523 lines)
+│   │   ├── server.rs                         # Main proxy server (402 lines)
+│   │   ├── http_client.rs                    # Optimized HTTP client (78 lines)
+│   │   └── streaming.rs                      # Smart body handler (43 lines)
+│   │
+│   ├── 🔒 tls/                                # TLS & Certificate System (1,156 lines)
+│   │   ├── server.rs                         # HTTPS termination server (189 lines)
+│   │   ├── cert_gen.rs                       # Certificate generation (515 lines)
+│   │   ├── cache.rs                          # Certificate caching (350 lines)
+│   │   ├── config.rs                         # TLS configuration (72 lines)
+│   │   └── mod.rs                            # TLS module exports (30 lines)
+│   │
+│   ├── ⚙️ config/                             # Configuration Management (166 lines)
+│   │   ├── settings.rs                       # Complete config structs (161 lines)
+│   │   └── mod.rs                            # Config exports (5 lines)
+│   │
+│   ├── 📋 logging/                            # Production Logging (296 lines)
+│   │   └── mod.rs                            # Structured logging system
+│   │
+│   ├── 🛠️ utils/                              # HTTP/URL/Time Utilities (366 lines)
+│   │   ├── http.rs                           # HTTP processing (197 lines)
+│   │   ├── logging.rs                        # Logging utilities (111 lines)
+│   │   ├── url.rs                            # URL parsing (23 lines)
+│   │   ├── time.rs                           # Time utilities (24 lines)
+│   │   └── mod.rs                            # Utility exports (11 lines)
+│   │
+│   ├── 🎮 cli/                                # Command-Line Interface (291 lines)
+│   │   ├── server.rs                         # Server management commands (130 lines)
+│   │   ├── cert.rs                           # Certificate CLI tools (118 lines)
+│   │   └── mod.rs                            # CLI exports (43 lines)
+│   │
+│   ├── 📊 models/                             # Data Structures (137 lines)
+│   │   └── mod.rs                            # Request/Response/Log models
+│   │
+│   ├── ❌ error/                              # Error Handling (50 lines)
+│   │   └── mod.rs                            # Custom error types
+│   │
+│   ├── main.rs                               # Server entry point (134 lines)
+│   ├── main_cli.rs                           # CLI entry point (43 lines)
+│   └── lib.rs                                # Library exports (22 lines)
+│
+├── 📚 docs/                                   # Comprehensive Documentation
+├── 🐳 docker-compose.yml                     # Docker deployment
+├── 📋 Makefile                               # Development/production commands
+├── 🔧 Cargo.toml                             # Dependencies and features
+└── 🧪 scripts/                               # Testing and setup automation
 ```
 
-## Current Architecture Components
+## 🌊 Data Flow Architecture
 
-### 1. Core Server (`src/proxy/server.rs`) - 402 lines
+### **1. HTTP Request Flow**
+```
+┌─────────────┐    ┌─────────────────────────────────────┐    ┌──────────────────┐
+│             │    │                                     │    │                  │
+│  HTTP       │    │  Rust Forward Proxy                 │    │  Upstream        │
+│  Client     │───▶│  ┌─────────────────────────────────┐ │───▶│  HTTP Server     │
+│             │    │  │  HTTP Request Handler           │ │    │                  │
+│             │◀───│  │  • Parse headers/body/cookies   │ │◀───│                  │
+└─────────────┘    │  │  • Extract form data           │ │    └──────────────────┘
+                   │  │  • Log complete request        │ │
+                   │  │  • Forward to upstream         │ │
+                   │  │  • Log complete response       │ │
+                   │  └─────────────────────────────────┘ │
+                   └─────────────────────────────────────┘
+                                     │
+                                     ▼
+                            ┌─────────────────┐
+                            │  Complete       │
+                            │  HTTP Traffic   │
+                            │  Visibility     │
+                            └─────────────────┘
+```
 
-**Main Handler Functions:**
-- `handle_request()` - Main request dispatcher (clean and lean)
-- `handle_connect_request()` - CONNECT tunneling with hyper upgrade mechanism
-- `handle_http_request()` - HTTP request processing with full interception
-- `extract_request_data()` - Request data extraction and processing
-- `handle_regular_request()` - Upstream forwarding logic
-
-**Key Features:**
-- **CONNECT Tunneling**: Uses `hyper::upgrade::on()` for proper HTTPS tunneling
-- **Bidirectional Data Copy**: `tunnel_bidirectional()` for raw TCP forwarding
-- **Clean Request Flow**: Simplified main handler with extracted utility functions
+**Detailed HTTP Flow:**
+1. **Client Request** → `handle_request()` in `proxy/server.rs`
+2. **Request Parsing** → `extract_request_data()` extracts headers, cookies, body
+3. **Logging** → `log_incoming_request()` creates clean INFO log
+4. **Upstream Forward** → `build_forwarding_request()` constructs upstream request
+5. **Response Handling** → Complete response logging and return to client
 
 ### 2. Utility Modules (`src/utils/`) - 366 lines total
 

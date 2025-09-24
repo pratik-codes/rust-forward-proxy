@@ -88,17 +88,19 @@ impl HttpClient {
         info!("   TCP keepalive enabled: {}", config.tcp_keepalive);
 
         // Create HTTPS connector with optimized settings
+        // Temporarily disable HTTP/2 to fix 400 errors with some servers like Google
         let https_connector = HttpsConnectorBuilder::new()
             .with_native_roots()
             .https_or_http()
             .enable_http1()
             .build();
 
-        // Create HTTPS client with advanced connection pooling and HTTP/2 optimizations
+        // Create HTTPS client with advanced connection pooling
+        // Temporarily force HTTP/1.1 only to fix 400 errors with some servers like Google
         let https_client = Client::builder()
             .pool_idle_timeout(config.idle_timeout)
             .pool_max_idle_per_host(config.max_idle_per_host)
-            .http2_only(false) // Allow both HTTP/1.1 and HTTP/2
+            .http2_only(false) // Allow both HTTP/1.1 and HTTP/2 but prefer HTTP/1.1
             .build(https_connector);
 
         // Create HTTP connector for regular HTTP requests with advanced TCP settings

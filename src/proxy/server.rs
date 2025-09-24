@@ -467,33 +467,69 @@ async fn forward_intercepted_request_direct(
         .uri(&target_url);
     
     // Add headers (skip hop-by-hop and problematic headers)
+    let mut forwarded_headers = 0;
+    let mut skipped_headers = 0;
+    
     for (name, value) in &headers {
         let name_str = name.as_str().to_lowercase();
         
         // Skip hop-by-hop headers and problematic headers that might cause 400 errors
         if !is_hop_by_hop_header(&name_str) 
-            && name_str != "host" 
+            && name_str != "host"                   // Will be set explicitly below
             && name_str != "x-forwarded-for"
             && name_str != "x-forwarded-proto"
             && name_str != "x-real-ip"
             && name_str != "rtt"                    // Network timing hint
             && name_str != "downlink"               // Network speed hint  
             && name_str != "priority"               // Browser priority hint
+            && name_str != "ect"                    // Effective connection type hint
             && !name_str.starts_with("x-browser-") // Chrome browser headers
             && !name_str.starts_with("sec-ch-ua")  // Chrome Client Hints
             && !name_str.starts_with("sec-ch-prefers") // Chrome preference hints
-            && name_str != "x-client-data" {        // Chrome telemetry data
+            && name_str != "x-client-data"          // Chrome telemetry data
+            && name_str != "sec-fetch-dest"         // Browser security hint
+            && name_str != "sec-fetch-mode"         // Browser security hint
+            && name_str != "sec-fetch-site"         // Browser security hint
+            && name_str != "sec-fetch-user"         // Browser security hint
+            && name_str != "upgrade-insecure-requests" // Browser security hint
+            && name_str != "sec-fetch-storage-access" { // Browser security hint
             request_builder = request_builder.header(name, value);
+            forwarded_headers += 1;
+        } else {
+            skipped_headers += 1;
         }
     }
+    
+    info!("📋 Header filtering: {} forwarded, {} skipped", forwarded_headers, skipped_headers);
     
     // Set the correct host header (without port for standard ports)
     let host_header = if port == 443 || port == 80 { host.to_string() } else { format!("{}:{}", host, port) };
     request_builder = request_builder.header("host", host_header);
     
+    // Ensure we have required headers for proper HTTP handling
+    if !headers.contains_key("user-agent") {
+        request_builder = request_builder.header("user-agent", "Mozilla/5.0 (compatible; RustProxy/1.0)");
+    }
+    
+    // Set proper content-length for body if we have a body
+    if !body_bytes.is_empty() {
+        request_builder = request_builder.header("content-length", body_bytes.len().to_string());
+    }
+    
+    let body_size = body_bytes.len();
     let request = request_builder.body(Body::from(body_bytes))?;
     
+    // Debug log the final request that will be sent upstream
     info!("📡 Sending request to upstream server...");
+    info!("🔍 Upstream request: {} {}", request.method(), request.uri());
+    info!("📝 Upstream request headers:");
+    for (name, value) in request.headers() {
+        if let Ok(value_str) = value.to_str() {
+            info!("   {}: {}", name, value_str);
+        }
+    }
+    info!("📦 Upstream request body size: {} bytes", body_size);
+    
     let upstream_start = std::time::Instant::now();
     
     // Forward the request
