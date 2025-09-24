@@ -1,2 +1,5 @@
 target/
 docs/*.log
+logs/*
+ca-certs/*
+certs/*

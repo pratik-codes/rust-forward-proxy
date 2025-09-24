@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(false);
         
         if https_interception {
-            log_info!("🔍 HTTPS interception enabled - CONNECT requests to port 443 will be intercepted");
+            tracing::debug!("🔍 HTTPS interception enabled - CONNECT requests to port 443 will be intercepted");
             log_info!("⚠️  Clients will see certificate warnings (normal for self-signed certs)");
         }
         

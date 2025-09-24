@@ -19,5 +19,3 @@ pub use models::{ProxyLog, RequestData, ResponseData};
 pub use proxy::server::ProxyServer;
 pub use config::settings::ProxyConfig;
 
-// Legacy compatibility exports
-pub use logging::{SharedLogger, ProxyLogger};

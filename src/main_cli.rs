@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
             let default_args = ServerArgs {
                 listen_addr: "127.0.0.1:8080".to_string(),
                 https_listen_addr: "127.0.0.1:8443".to_string(),
-                enable_tls: false, // Disabled by default
+                enable_tls: true, // Disabled by default
                 enable_interception: true,
                 auto_generate_cert: true,
                 cert_path: "certs/proxy.crt".to_string(),

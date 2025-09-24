@@ -2,7 +2,6 @@
 
 use crate::log_info;
 use hyper::{Request, Response, Body};
-use std::time::Instant;
 
 /// Middleware for logging requests and responses
 pub struct LoggingMiddleware;

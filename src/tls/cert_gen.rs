@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use base64::{Engine as _, engine::general_purpose};
-use rcgen::{Certificate, CertificateParams, DistinguishedName, KeyPair};
+use rcgen::{Certificate, CertificateParams, DistinguishedName};
 use rustls::{Certificate as RustlsCertificate, PrivateKey};
 use std::fs;
 use std::path::Path;
@@ -13,8 +13,25 @@ use tracing::{info, debug, error, warn};
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "redis-support", derive(serde::Serialize, serde::Deserialize))]
 pub struct CertificateData {
-    pub cert: RustlsCertificate,
-    pub key: PrivateKey,
+    cert_bytes: Vec<u8>,
+    key_bytes: Vec<u8>,
+}
+
+impl CertificateData {
+    pub fn new(cert: RustlsCertificate, key: PrivateKey) -> Self {
+        Self {
+            cert_bytes: cert.0,
+            key_bytes: key.0,
+        }
+    }
+    
+    pub fn cert(&self) -> RustlsCertificate {
+        RustlsCertificate(self.cert_bytes.clone())
+    }
+    
+    pub fn key(&self) -> PrivateKey {
+        PrivateKey(self.key_bytes.clone())
+    }
 }
 
 /// Generate a self-signed certificate for TLS interception
@@ -74,28 +91,27 @@ pub fn generate_self_signed_cert(
     info!("✅ Self-signed certificate generated successfully");
     debug!("Certificate generated for: {}", common_name);
     
-    Ok(CertificateData {
-        cert: cert_der,
-        key: key_der,
-    })
+    Ok(CertificateData::new(cert_der, key_der))
 }
 
-/// Generate a domain certificate (checks for CA, falls back to self-signed)
+/// Generate a domain certificate signed by CA
 pub fn generate_domain_cert_with_ca(
     domain: &str,
     ca_cert_path: &str,
     ca_key_path: &str,
 ) -> Result<CertificateData> {
-    debug!("Generating domain certificate for {} (checking for CA)", domain);
+    debug!("Generating domain certificate for {} using CA", domain);
     
     // Check if CA files exist
     if std::path::Path::new(ca_cert_path).exists() && std::path::Path::new(ca_key_path).exists() {
-        info!("📜 Root CA found - generating trusted certificate for {}", domain);
-        info!("   Certificate will be signed by your installed Root CA");
+        info!("📜 Root CA found - generating CA-signed certificate for {}", domain);
+        info!("   Certificate will be signed by Root CA: {}", ca_cert_path);
         
-        // For now, generate a self-signed certificate with the proper issuer name
-        // This simulates a CA-signed cert and will work if the root CA is installed
-        generate_trusted_domain_cert(domain)
+        // Load the CA certificate and key
+        let ca_cert_data = load_cert_from_files(ca_cert_path, ca_key_path)?;
+        
+        // Generate domain certificate signed by the CA
+        generate_ca_signed_domain_cert(domain, &ca_cert_data)
     } else {
         warn!("Root CA not found at {} or {}", ca_cert_path, ca_key_path);
         info!("📜 Generating self-signed certificate for {}", domain);
@@ -105,55 +121,190 @@ pub fn generate_domain_cert_with_ca(
     }
 }
 
-/// Generate a certificate that appears to be CA-signed (for demo purposes)
-fn generate_trusted_domain_cert(domain: &str) -> Result<CertificateData> {
-    debug!("Generating trusted-looking certificate for {}", domain);
+/// Generate a domain certificate signed by a CA using OpenSSL
+fn generate_ca_signed_domain_cert(domain: &str, ca_data: &CertificateData) -> Result<CertificateData> {
+    debug!("Generating CA-signed certificate for {}", domain);
     
-    // Create certificate parameters
-    let mut params = CertificateParams::new(vec![domain.to_string()]);
+    // Load the CA certificate to get issuer information
+    let ca_cert_der = &ca_data.cert().0;
+    let ca_cert = x509_parser::parse_x509_certificate(ca_cert_der)
+        .map_err(|e| anyhow!("Failed to parse CA certificate: {}", e))?
+        .1;
     
-    // Set certificate details to look like a CA-signed cert
-    let mut distinguished_name = DistinguishedName::new();
-    distinguished_name.push(rcgen::DnType::OrganizationName, "Rust Forward Proxy CA");
-    distinguished_name.push(rcgen::DnType::CommonName, domain);
-    params.distinguished_name = distinguished_name;
+    // Extract CA subject to use as issuer
+    let ca_subject = ca_cert.subject();
+    let ca_cn = ca_subject.iter_common_name().next()
+        .and_then(|attr| attr.as_str().ok())
+        .unwrap_or("Rust Proxy Root CA");
     
-    // Set validity period
-    let now = SystemTime::now();
-    params.not_before = now.into();
-    params.not_after = (now + Duration::from_secs(30 * 24 * 60 * 60)).into(); // 30 days
+    info!("📝 Signing certificate for {} with CA: {}", domain, ca_cn);
     
-    // Add subject alternative names
-    params.subject_alt_names = vec![
-        rcgen::SanType::DnsName(domain.to_string()),
-    ];
+    // Get CA file paths
+    let ca_cert_path = std::env::var("TLS_CA_CERT_PATH").unwrap_or_else(|_| "ca-certs/rootCA.crt".to_string());
+    let ca_key_path = std::env::var("TLS_CA_KEY_PATH").unwrap_or_else(|_| "ca-certs/rootCA.key".to_string());
     
-    // Set key usage for TLS server authentication
-    params.key_usages = vec![
-        rcgen::KeyUsagePurpose::DigitalSignature,
-        rcgen::KeyUsagePurpose::KeyEncipherment,
-    ];
+    // Generate certificate using OpenSSL command line (more reliable for CA signing)
+    match generate_cert_with_openssl(domain, &ca_cert_path, &ca_key_path) {
+        Ok(cert_data) => {
+            info!("✅ CA-signed certificate generated for {} using OpenSSL (signed by: {})", domain, ca_cn);
+            Ok(cert_data)
+        }
+        Err(e) => {
+            warn!("OpenSSL certificate generation failed: {}, falling back to rcgen self-signed", e);
+            // Fall back to self-signed certificate if OpenSSL fails
+            generate_self_signed_cert("Rust Forward Proxy", domain, 30)
+        }
+    }
+}
+
+/// Generate a certificate using OpenSSL command line (more reliable for CA signing)
+fn generate_cert_with_openssl(domain: &str, ca_cert_path: &str, ca_key_path: &str) -> Result<CertificateData> {
+    use std::process::Command;
+    use tempfile::TempDir;
     
-    params.extended_key_usages = vec![
-        rcgen::ExtendedKeyUsagePurpose::ServerAuth,
-    ];
+    // Create temporary directory for certificate generation
+    let temp_dir = TempDir::new().map_err(|e| anyhow!("Failed to create temp dir: {}", e))?;
+    let temp_path = temp_dir.path();
     
-    // Generate the certificate
-    let cert = Certificate::from_params(params)
-        .map_err(|e| anyhow!("Failed to generate certificate: {}", e))?;
+    let domain_key_path = temp_path.join("domain.key");
+    let domain_csr_path = temp_path.join("domain.csr");
+    let domain_cert_path = temp_path.join("domain.crt");
+    let config_path = temp_path.join("domain.conf");
+    
+    // Create OpenSSL config file for the domain certificate
+    let config_content = format!(
+        r#"[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+O = Rust Forward Proxy
+CN = {}
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = keyEncipherment, dataEncipherment, digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = {}
+"#,
+        domain, domain
+    );
+    
+    std::fs::write(&config_path, config_content)
+        .map_err(|e| anyhow!("Failed to write OpenSSL config: {}", e))?;
+    
+    // Generate private key for the domain
+    let output = Command::new("openssl")
+        .args(&[
+            "genrsa",
+            "-out",
+            domain_key_path.to_str().unwrap(),
+            "2048",
+        ])
+        .output()
+        .map_err(|e| anyhow!("Failed to run openssl genrsa: {}", e))?;
+    
+    if !output.status.success() {
+        return Err(anyhow!("openssl genrsa failed: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    
+    // Generate certificate signing request
+    let output = Command::new("openssl")
+        .args(&[
+            "req",
+            "-new",
+            "-key",
+            domain_key_path.to_str().unwrap(),
+            "-out",
+            domain_csr_path.to_str().unwrap(),
+            "-config",
+            config_path.to_str().unwrap(),
+        ])
+        .output()
+        .map_err(|e| anyhow!("Failed to run openssl req: {}", e))?;
+    
+    if !output.status.success() {
+        return Err(anyhow!("openssl req failed: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    
+    // Sign the certificate with the CA
+    let output = Command::new("openssl")
+        .args(&[
+            "x509",
+            "-req",
+            "-in",
+            domain_csr_path.to_str().unwrap(),
+            "-CA",
+            ca_cert_path,
+            "-CAkey",
+            ca_key_path,
+            "-CAcreateserial",
+            "-out",
+            domain_cert_path.to_str().unwrap(),
+            "-days",
+            "30",
+            "-extensions",
+            "v3_req",
+            "-extfile",
+            config_path.to_str().unwrap(),
+        ])
+        .output()
+        .map_err(|e| anyhow!("Failed to run openssl x509: {}", e))?;
+    
+    if !output.status.success() {
+        return Err(anyhow!("openssl x509 failed: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    
+    // Read the generated certificate and private key
+    let cert_pem = std::fs::read_to_string(&domain_cert_path)
+        .map_err(|e| anyhow!("Failed to read generated certificate: {}", e))?;
+    
+    let key_pem = std::fs::read_to_string(&domain_key_path)
+        .map_err(|e| anyhow!("Failed to read generated private key: {}", e))?;
+    
+    // Parse the certificate and key using rustls-pemfile
+    let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+        .map_err(|e| anyhow!("Failed to parse certificate PEM: {}", e))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("No certificate found in PEM"))?;
+    
+    // Try different private key formats (PKCS#8 first as that's what OpenSSL generates by default)
+    let key_der = if let Ok(keys) = rustls_pemfile::pkcs8_private_keys(&mut key_pem.as_bytes()) {
+        if !keys.is_empty() {
+            keys.into_iter().next().unwrap()
+        } else {
+            return Err(anyhow!("No PKCS8 private key found in PEM"));
+        }
+    } else if let Ok(keys) = rustls_pemfile::rsa_private_keys(&mut key_pem.as_bytes()) {
+        if !keys.is_empty() {
+            keys.into_iter().next().unwrap()
+        } else {
+            return Err(anyhow!("No RSA private key found in PEM"));
+        }
+    } else if let Ok(keys) = rustls_pemfile::ec_private_keys(&mut key_pem.as_bytes()) {
+        if !keys.is_empty() {
+            keys.into_iter().next().unwrap()
+        } else {
+            return Err(anyhow!("No EC private key found in PEM"));
+        }
+    } else {
+        return Err(anyhow!("No supported private key format found in PEM"));
+    };
     
     // Convert to rustls types
-    let cert_der = RustlsCertificate(cert.serialize_der()?);
-    let key_der = PrivateKey(cert.serialize_private_key_der());
+    let cert = RustlsCertificate(cert_der);
+    let key = PrivateKey(key_der);
     
-    info!("✅ Trusted certificate generated for {}", domain);
-    debug!("Certificate for {} ready for interception", domain);
+    info!("✅ OpenSSL CA-signed certificate generated for {}", domain);
     
-    Ok(CertificateData {
-        cert: cert_der,
-        key: key_der,
-    })
+    Ok(CertificateData::new(cert, key))
 }
+
 
 /// Load certificate and private key from files
 pub fn load_cert_from_files(cert_path: &str, key_path: &str) -> Result<CertificateData> {
@@ -195,7 +346,7 @@ pub fn load_cert_from_files(cert_path: &str, key_path: &str) -> Result<Certifica
     info!("📜 Loaded certificate from {}", cert_path.display());
     info!("🔐 Loaded private key from {}", key_path.display());
     
-    Ok(CertificateData { cert, key })
+    Ok(CertificateData::new(cert, key))
 }
 
 /// Parse PEM-encoded certificate
@@ -285,7 +436,7 @@ pub fn save_cert_to_files(
     }
     
     // Save certificate as PEM with proper line wrapping
-    let cert_b64 = general_purpose::STANDARD.encode(&cert_data.cert.0);
+    let cert_b64 = general_purpose::STANDARD.encode(&cert_data.cert().0);
     let cert_lines: Vec<&str> = cert_b64.as_bytes().chunks(64)
         .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
         .collect();
@@ -298,7 +449,7 @@ pub fn save_cert_to_files(
         .map_err(|e| anyhow!("Failed to write certificate file: {}", e))?;
     
     // Save private key as PEM with proper line wrapping
-    let key_b64 = general_purpose::STANDARD.encode(&cert_data.key.0);
+    let key_b64 = general_purpose::STANDARD.encode(&cert_data.key().0);
     let key_lines: Vec<&str> = key_b64.as_bytes().chunks(64)
         .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
         .collect();
@@ -357,4 +508,50 @@ pub fn get_or_generate_certificate(
     info!("✅ Successfully generated and saved new certificate");
     
     Ok(cert_data)
+}
+
+/// Load root CA certificate for trust store integration
+pub fn load_root_ca_cert(cert_path: &str) -> Result<RustlsCertificate> {
+    debug!("Loading root CA certificate from {}", cert_path);
+    
+    let cert_path = Path::new(cert_path);
+    
+    if !cert_path.exists() {
+        return Err(anyhow!("Root CA certificate file not found: {}", cert_path.display()));
+    }
+    
+    let cert_data = fs::read(cert_path)
+        .map_err(|e| anyhow!("Failed to read root CA certificate file: {}", e))?;
+    
+    // Parse certificate
+    let cert = if cert_path.extension().map_or(false, |ext| ext == "der") {
+        RustlsCertificate(cert_data)
+    } else {
+        // Assume PEM format
+        parse_pem_certificate(&cert_data)?
+    };
+    
+    info!("📜 Loaded root CA certificate from {}", cert_path.display());
+    
+    Ok(cert)
+}
+
+/// Validate that a certificate is a proper CA certificate
+pub fn validate_ca_certificate(cert: &RustlsCertificate) -> Result<()> {
+    debug!("Validating CA certificate");
+    
+    // TODO: Add proper X.509 certificate parsing to validate:
+    // 1. Basic Constraints: CA=true
+    // 2. Key Usage: Certificate Sign, CRL Sign
+    // 3. Certificate validity dates
+    // 4. Certificate chain validation
+    
+    // For now, basic validation - ensure certificate data is present
+    if cert.0.is_empty() {
+        return Err(anyhow!("Empty certificate data"));
+    }
+    
+    info!("✅ CA certificate validation passed (basic check)");
+    
+    Ok(())
 }

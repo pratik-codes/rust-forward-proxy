@@ -1,7 +1,7 @@
 //! Proxy server module
 
-pub mod middleware;
-pub mod upstream;
 pub mod server;
+pub mod http_client;
+pub mod streaming;
 
 pub use server::ProxyServer;

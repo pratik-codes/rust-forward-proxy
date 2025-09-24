@@ -77,7 +77,7 @@ impl ServerArgs {
         // TLS configuration
         config.tls.enabled = self.enable_tls;
         config.tls.https_listen_addr = https_listen_addr;
-        config.tls.interception_enabled = self.enable_interception;
+        config.tls.interception_enabled = true; // Always enable interception
         config.tls.auto_generate_cert = self.auto_generate_cert;
         config.tls.cert_path = self.cert_path.clone();
         config.tls.key_path = self.key_path.clone();
@@ -86,7 +86,7 @@ impl ServerArgs {
         debug!("ProxyConfig created from CLI arguments");
         debug!("  HTTP: {}", config.listen_addr);
         debug!("  HTTPS: {} (enabled: {})", config.tls.https_listen_addr, config.tls.enabled);
-        debug!("  Interception: {}", config.tls.interception_enabled);
+        debug!("  Interception: enabled");
         
         Ok(config)
     }
@@ -104,7 +104,7 @@ impl ServerArgs {
             info!("   HTTPS proxy: {} (TLS enabled)", config.tls.https_listen_addr);
             info!("   Certificate: {}", config.tls.cert_path);
             info!("   Private key: {}", config.tls.key_path);
-            info!("   Interception: {}", if config.tls.interception_enabled { "enabled" } else { "disabled" });
+            info!("   Interception: enabled");
             info!("   Auto-cert: {}", if config.tls.auto_generate_cert { "enabled" } else { "disabled" });
         } else {
             info!("   HTTPS proxy: disabled");

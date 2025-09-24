@@ -226,7 +226,7 @@ impl CertificateCache for RedisCache {
             
         let mut conn = self.connection.lock().unwrap();
         
-        match conn.set_ex::<_, _, ()>(&key, data, ttl_seconds) {
+        match conn.set_ex::<_, _, ()>(&key, data, ttl_seconds.try_into().unwrap()) {
             Ok(_) => {
                 debug!("Cached certificate in Redis for domain: {} (TTL: {} seconds)", domain, ttl_seconds);
                 Ok(())

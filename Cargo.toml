@@ -38,6 +38,7 @@ log = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-log = "0.1" # Bridge log events to tracing
+tracing-appender = "0.2" # File appender for tracing
 
 # Optional: For form data parsing
 form_urlencoded = "1.2"
@@ -52,6 +53,9 @@ base64 = "0.21"
 # System certificate loading
 rustls-native-certs = "0.7"
 rustls-pemfile = "1.0"
+
+# X.509 certificate parsing
+x509-parser = "0.16"
 
 # CLI argument parsing
 clap = { version = "4.0", features = ["derive"] }

@@ -3,20 +3,41 @@ use anyhow::Result;
 use chrono::Utc;
 use log::{debug, error, info, trace, warn, LevelFilter};
 use serde_json;
+use std::fs;
+use std::path::Path;
 use std::sync::Once;
 use tracing::Level;
-use tracing_subscriber::{EnvFilter, FmtSubscriber};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_appender::{rolling, non_blocking};
 use tracing_log::LogTracer;
 
 static INIT: Once = Once::new();
+
+/// Ensure the logs directory exists
+fn ensure_logs_directory() -> Result<()> {
+    let logs_dir = Path::new("logs");
+    if !logs_dir.exists() {
+        fs::create_dir_all(logs_dir)?;
+        println!("📁 Created logs directory: {}", logs_dir.display());
+    }
+    Ok(())
+}
 
 /// Initialize the global logger with production-grade configuration
 /// This should be called once at the start of the application
 pub fn init_logger() {
     INIT.call_once(|| {
-        // Set up tracing subscriber with console output
-        FmtSubscriber::builder()
-            .with_env_filter(EnvFilter::from_default_env())
+        // Ensure logs directory exists
+        if let Err(e) = ensure_logs_directory() {
+            eprintln!("Warning: Failed to create logs directory: {:?}", e);
+        }
+
+        // Create file appender for daily rolling logs
+        let file_appender = rolling::daily("logs", "proxy.log");
+        let (non_blocking_file, _guard) = non_blocking(file_appender);
+
+        // Create console layer
+        let console_layer = tracing_subscriber::fmt::layer()
             .with_target(false)
             .with_thread_ids(true)
             .with_thread_names(true)
@@ -24,7 +45,24 @@ pub fn init_logger() {
             .with_line_number(true)
             .with_level(true)
             .with_ansi(true)
-            .pretty()
+            .pretty();
+
+        // Create file layer
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_level(true)
+            .with_ansi(false) // No ANSI codes in files
+            .with_writer(non_blocking_file);
+
+        // Initialize the subscriber with both console and file output
+        tracing_subscriber::registry()
+            .with(EnvFilter::from_default_env())
+            .with(console_layer)
+            .with(file_layer)
             .init();
 
         // Initialize LogTracer to bridge log events to tracing (after subscriber is set up)
@@ -34,14 +72,27 @@ pub fn init_logger() {
 
         // Set the log crate's max level to match tracing
         log::set_max_level(LevelFilter::Debug);
+
+        // Log that file logging is enabled
+        info!("📁 Logging initialized - Console + File (logs/proxy.log)");
+        std::mem::forget(_guard); // Keep the guard alive for the lifetime of the program
     });
 }
 
 /// Initialize logger with custom log level
 pub fn init_logger_with_level(level: Level) {
     INIT.call_once(|| {
-        FmtSubscriber::builder()
-            .with_max_level(level)
+        // Ensure logs directory exists
+        if let Err(e) = ensure_logs_directory() {
+            eprintln!("Warning: Failed to create logs directory: {:?}", e);
+        }
+
+        // Create file appender for daily rolling logs
+        let file_appender = rolling::daily("logs", "proxy.log");
+        let (non_blocking_file, _guard) = non_blocking(file_appender);
+
+        // Create console layer
+        let console_layer = tracing_subscriber::fmt::layer()
             .with_target(false)
             .with_thread_ids(true)
             .with_thread_names(true)
@@ -49,7 +100,33 @@ pub fn init_logger_with_level(level: Level) {
             .with_line_number(true)
             .with_level(true)
             .with_ansi(true)
-            .pretty()
+            .pretty();
+
+        // Create file layer
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_level(true)
+            .with_ansi(false) // No ANSI codes in files
+            .with_writer(non_blocking_file);
+
+        // Create an EnvFilter from the level
+        let filter = match level {
+            Level::ERROR => EnvFilter::new("error"),
+            Level::WARN => EnvFilter::new("warn"),
+            Level::INFO => EnvFilter::new("info"),
+            Level::DEBUG => EnvFilter::new("debug"),
+            Level::TRACE => EnvFilter::new("trace"),
+        };
+
+        // Initialize the subscriber with both console and file output and custom level
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(console_layer)
+            .with(file_layer)
             .init();
 
         // Initialize LogTracer to bridge log events to tracing (after subscriber is set up)
@@ -64,13 +141,24 @@ pub fn init_logger_with_level(level: Level) {
             Level::DEBUG => LevelFilter::Debug,
             Level::TRACE => LevelFilter::Trace,
         });
+
+        // Log that file logging is enabled
+        info!("📁 Logging initialized with level {:?} - Console + File (logs/proxy.log)", level);
+        std::mem::forget(_guard); // Keep the guard alive for the lifetime of the program
     });
 }
 
-/// Initialize logger with environment variable support
+/// Initialize logger with environment variable support and optional file logging
 /// Uses RUST_LOG environment variable for configuration
+/// Uses PROXY_ENABLE_FILE_LOGGING environment variable to control file logging (default: true)
 pub fn init_logger_with_env() {
     INIT.call_once(|| {
+        // Check if file logging is enabled via environment variable
+        let enable_file_logging = std::env::var("PROXY_ENABLE_FILE_LOGGING")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
+            .unwrap_or(true);
+
         // Set log level based on environment first
         let level = std::env::var("RUST_LOG")
             .unwrap_or_else(|_| "info".to_string())
@@ -79,9 +167,8 @@ pub fn init_logger_with_env() {
         
         log::set_max_level(level);
 
-        // Set up tracing subscriber with console output
-        FmtSubscriber::builder()
-            .with_env_filter(EnvFilter::from_default_env())
+        // Create console layer
+        let console_layer = tracing_subscriber::fmt::layer()
             .with_target(false)
             .with_thread_ids(true)
             .with_thread_names(true)
@@ -89,13 +176,98 @@ pub fn init_logger_with_env() {
             .with_line_number(true)
             .with_level(true)
             .with_ansi(true)
-            .pretty()
+            .pretty();
+
+        if enable_file_logging {
+            // Ensure logs directory exists only if file logging is enabled
+            if let Err(e) = ensure_logs_directory() {
+                eprintln!("Warning: Failed to create logs directory: {:?}", e);
+            }
+
+            // Create file appender for daily rolling logs
+            let file_appender = rolling::daily("logs", "proxy.log");
+            let (non_blocking_file, _guard) = non_blocking(file_appender);
+
+            // Create file layer
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_file(true)
+                .with_line_number(true)
+                .with_level(true)
+                .with_ansi(false) // No ANSI codes in files
+                .with_writer(non_blocking_file);
+
+            // Initialize the subscriber with both console and file output
+            tracing_subscriber::registry()
+                .with(EnvFilter::from_default_env())
+                .with(console_layer)
+                .with(file_layer)
+                .init();
+
+            // Initialize LogTracer to bridge log events to tracing (after subscriber is set up)
+            if let Err(e) = LogTracer::init() {
+                eprintln!("Warning: Failed to initialize LogTracer: {:?}", e);
+            }
+
+            // Log that both console and file logging are enabled
+            info!("📁 Logging initialized with env config - Console + File (logs/proxy.log)");
+            std::mem::forget(_guard); // Keep the guard alive for the lifetime of the program
+        } else {
+            // Initialize the subscriber with console output only
+            tracing_subscriber::registry()
+                .with(EnvFilter::from_default_env())
+                .with(console_layer)
+                .init();
+
+            // Initialize LogTracer to bridge log events to tracing (after subscriber is set up)
+            if let Err(e) = LogTracer::init() {
+                eprintln!("Warning: Failed to initialize LogTracer: {:?}", e);
+            }
+
+            // Log that only console logging is enabled
+            info!("📺 Logging initialized with env config - Console Only (file logging disabled)");
+        }
+    });
+}
+
+/// Initialize logger with console output only (no file logging)
+/// Perfect for production environments where you want to avoid file I/O overhead
+pub fn init_console_only_logger() {
+    INIT.call_once(|| {
+        // Set log level based on environment
+        let level = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "info".to_string())
+            .parse::<LevelFilter>()
+            .unwrap_or(LevelFilter::Info);
+        
+        log::set_max_level(level);
+
+        // Create console layer only
+        let console_layer = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_level(true)
+            .with_ansi(true)
+            .pretty();
+
+        // Initialize the subscriber with console output only
+        tracing_subscriber::registry()
+            .with(EnvFilter::from_default_env())
+            .with(console_layer)
             .init();
 
         // Initialize LogTracer to bridge log events to tracing (after subscriber is set up)
         if let Err(e) = LogTracer::init() {
             eprintln!("Warning: Failed to initialize LogTracer: {:?}", e);
         }
+
+        // Log that only console logging is enabled
+        info!("🚀 High-performance console-only logging initialized (no file I/O overhead)");
     });
 }
 
@@ -208,88 +380,3 @@ macro_rules! log_trace {
     };
 }
 
-/// Legacy compatibility struct for existing code
-/// This provides a drop-in replacement for the old logger interface
-#[derive(Clone)]
-pub struct SharedLogger;
-
-impl SharedLogger {
-    /// Create a new shared logger (no-op for compatibility)
-    pub fn new(_logger: ProxyLogger) -> Self {
-        Self
-    }
-
-    /// Log a transaction (thread-safe)
-    pub async fn log_transaction(&self, log_entry: &ProxyLog) -> Result<()> {
-        log_transaction(log_entry)
-    }
-
-    /// Log an error message (thread-safe)
-    pub async fn log_error(&self, error: &str) -> Result<()> {
-        log_error(error);
-        Ok(())
-    }
-
-    /// Log an info message (thread-safe)
-    pub async fn log_info(&self, message: &str) -> Result<()> {
-        log_info(message);
-        Ok(())
-    }
-
-    /// Log a warning message (thread-safe)
-    pub async fn log_warning(&self, message: &str) -> Result<()> {
-        log_warning(message);
-        Ok(())
-    }
-
-    /// Log a debug message (thread-safe)
-    pub async fn log_debug(&self, message: &str) -> Result<()> {
-        log_debug(message);
-        Ok(())
-    }
-
-    /// Get the log file path (returns empty string for console-only logging)
-    pub fn get_log_file(&self) -> &str {
-        ""
-    }
-}
-
-/// Legacy compatibility struct for existing code
-pub struct ProxyLogger;
-
-impl ProxyLogger {
-    /// Create a new logger instance (no-op for compatibility)
-    pub fn new(_log_file: String, _enable_console: bool, _enable_file: bool) -> Result<Self> {
-        Ok(Self)
-    }
-
-    /// Create a logger with default settings (console-only)
-    pub fn default() -> Result<Self> {
-        Ok(Self)
-    }
-
-    /// Create a console-only logger
-    pub fn console_only() -> Self {
-        Self
-    }
-
-    /// Create a file-only logger (now console-only for compatibility)
-    pub fn file_only(_log_file: String) -> Result<Self> {
-        Ok(Self)
-    }
-
-    /// Get the log file path (returns empty string for console-only logging)
-    pub fn get_log_file(&self) -> &str {
-        ""
-    }
-
-    /// Check if console logging is enabled (always true)
-    pub fn is_console_enabled(&self) -> bool {
-        true
-    }
-
-    /// Check if file logging is enabled (always false)
-    pub fn is_file_enabled(&self) -> bool {
-        false
-    }
-}

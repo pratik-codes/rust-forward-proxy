@@ -7,9 +7,10 @@ This directory contains comprehensive documentation for the Rust Forward Proxy p
 1. [Architecture](architecture.md) - Detailed explanation of the proxy's architecture
 2. [Middleware System](middleware.md) - Documentation for the middleware components
 3. [Upstream Connection Management](upstream.md) - Details on managing connections to upstream servers
-4. [Performance Considerations](performance.md) - Optimization strategies and performance guidelines
-5. [Deployment Guide](deployment.md) - Instructions for deploying the proxy in various environments
-6. [Usage Guide](usage.md) - Guide for using the proxy with various clients
+4. [Performance Considerations](performance.md) - General optimization strategies and performance guidelines
+5. [Performance Optimization Analysis](PERFORMANCE_OPTIMIZATION.md) - **🚀 Comprehensive analysis of bottlenecks and optimization strategies**
+6. [Deployment Guide](deployment.md) - Instructions for deploying the proxy in various environments
+7. [Usage Guide](usage.md) - Guide for using the proxy with various clients
 
 ## Getting Started
 

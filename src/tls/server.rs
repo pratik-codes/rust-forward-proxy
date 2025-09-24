@@ -4,7 +4,7 @@ use crate::config::settings::ProxyConfig;
 use crate::tls::{get_or_generate_certificate, create_server_config, validate_tls_config};
 use crate::proxy::server::handle_request;
 use anyhow::{anyhow, Result};
-use hyper::service::{make_service_fn, service_fn};
+use hyper::service::service_fn;
 use hyper::{Body, Request, Response};
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -47,15 +47,15 @@ impl TlsProxyServer {
 
         // Create TLS server configuration
         let server_config = create_server_config(
-            cert_data.cert,
-            cert_data.key,
+            cert_data.cert(),
+            cert_data.key(),
             &self.config.tls,
         )?;
 
         info!("✅ TLS proxy server configuration completed");
         info!("📜 Certificate: {}", self.config.tls.cert_path);
         info!("🔐 Private key: {}", self.config.tls.key_path);
-        info!("🔒 Interception mode: {}", if self.config.tls.interception_enabled { "enabled" } else { "disabled" });
+        info!("🔒 Interception mode: enabled");
 
         // Create TLS acceptor
         let tls_acceptor = TlsAcceptor::from(server_config);
@@ -130,30 +130,23 @@ async fn handle_tls_connection(
 async fn handle_tls_request(
     req: Request<Body>,
     remote_addr: SocketAddr,
-    config: ProxyConfig,
+    _config: ProxyConfig,
 ) -> Result<Response<Body>, Infallible> {
     debug!("🔒 Processing decrypted HTTPS request from {}", remote_addr);
 
-    if config.tls.interception_enabled {
-        // Full interception mode - treat decrypted HTTPS as regular HTTP
-        // This gives us full visibility into the request/response
-        debug!("🔍 HTTPS interception mode: full request/response logging enabled");
-        
-        // Use the same handler as regular HTTP requests
-        // This provides complete transparency into HTTPS traffic
-        // Create a dummy certificate manager for TLS-terminated requests (no interception needed)
-        let cert_manager = Arc::new(crate::tls::CertificateManager::new());
-        handle_request(req, remote_addr, false, cert_manager).await // Don't enable HTTPS interception here since we're already handling TLS
-    } else {
-        // Pass-through mode (less useful, but available)
-        debug!("🚇 HTTPS pass-through mode: limited logging");
-        
-        // In this mode, we could just forward without full inspection
-        // But since we've already terminated TLS, might as well log it
-        // Create a dummy certificate manager for TLS-terminated requests (no interception needed)
-        let cert_manager = Arc::new(crate::tls::CertificateManager::new());
-        handle_request(req, remote_addr, false, cert_manager).await // Don't enable HTTPS interception here since we're already handling TLS
-    }
+    // Full interception mode - treat decrypted HTTPS as regular HTTP
+    // This gives us full visibility into the request/response
+    debug!("🔍 HTTPS interception mode: full request/response logging enabled");
+    
+    // Use the same handler as regular HTTP requests
+    // This provides complete transparency into HTTPS traffic
+    // Create a dummy certificate manager for TLS-terminated requests (no interception needed)
+    let cert_manager = Arc::new(crate::tls::CertificateManager::new());
+    // Create optimized HTTP client for performance
+    let client_manager = Arc::new(crate::proxy::http_client::HttpClient::from_env());
+    // Create smart body handler for streaming optimization
+    let body_handler = Arc::new(crate::proxy::streaming::SmartBodyHandler::from_env());
+    handle_request(req, remote_addr, false, cert_manager, client_manager, body_handler).await // Don't enable HTTPS interception here since we're already handling TLS
 }
 
 /// Start both HTTP and HTTPS servers concurrently
@@ -181,7 +174,7 @@ pub async fn start_dual_servers(config: ProxyConfig) -> Result<()> {
 
         info!("🌐 HTTP proxy: http://{}", config.listen_addr);
         info!("🔒 HTTPS proxy: https://{}", config.tls.https_listen_addr);
-        info!("🔍 HTTPS interception: {}", if config.tls.interception_enabled { "ENABLED" } else { "DISABLED" });
+        info!("🔍 HTTPS interception: ENABLED");
 
         // Wait for both servers
         tokio::try_join!(http_server, https_server)?;

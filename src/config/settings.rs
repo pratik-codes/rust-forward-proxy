@@ -92,6 +92,15 @@ pub struct TlsConfig {
     
     /// Skip upstream certificate verification (for testing)
     pub skip_upstream_cert_verify: bool,
+    
+    /// Path to root CA certificate file for trust store
+    pub root_ca_cert_path: Option<String>,
+    
+    /// Path to CA certificate for signing domain certificates
+    pub ca_cert_path: Option<String>,
+    
+    /// Path to CA private key for signing domain certificates
+    pub ca_key_path: Option<String>,
 }
 
 impl Default for ProxyConfig {
@@ -144,6 +153,9 @@ impl Default for TlsConfig {
             cert_validity_days: 365,
             min_tls_version: "1.2".to_string(),
             skip_upstream_cert_verify: false, // Verify upstream certs by default
+            root_ca_cert_path: Some("ca-certs/securly_ca.crt".to_string()),
+            ca_cert_path: Some("ca-certs/rootCA.crt".to_string()),
+            ca_key_path: Some("ca-certs/rootCA.key".to_string()),
         }
     }
 }

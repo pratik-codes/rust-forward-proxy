@@ -1,5 +1,5 @@
-# Makefile for Rust Forward Proxy Docker Management
-# =================================================
+# Makefile for Rust Forward Proxy
+# ================================
 
 # Default environment
 ENV ?= dev
@@ -29,17 +29,20 @@ NC = \033[0m # No Color
 .PHONY: help
 help: ## Show this help message
 	@echo ""
-	@echo "$(CYAN)Rust Forward Proxy - Docker Management$(NC)"
-	@echo "======================================"
+	@echo "$(CYAN)Rust Forward Proxy$(NC)"
+	@echo "==================="
 	@echo ""
-	@echo "$(YELLOW)Development Commands:$(NC)"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E "(dev|setup|test)" | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)  %-20s$(NC) %s\n", $$1, $$2}'
+	@echo "$(YELLOW)Main Commands:$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E "^(dev|prod)" | grep -v docker-detached | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)  %-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
-	@echo "$(YELLOW)Production Commands:$(NC)"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E "(prod|deploy)" | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)  %-20s$(NC) %s\n", $$1, $$2}'
+	@echo "$(YELLOW)Setup & Testing:$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E "^(setup|test)" | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)  %-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
-	@echo "$(YELLOW)Utility Commands:$(NC)"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -vE "(dev|prod|setup|test|deploy)" | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)  %-20s$(NC) %s\n", $$1, $$2}'
+	@echo "$(YELLOW)Docker Commands:$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E "^(docker|build|pull)" | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)  %-20s$(NC) %s\n", $$1, $$2}'
+	@echo ""
+	@echo "$(YELLOW)Help & Utilities:$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E "^(help|cache|status|health|clean|backup|restore)" | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)  %-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 
 # =================================================
@@ -80,67 +83,71 @@ setup-prod: ## Setup production environment with secure password generation
 	@echo "$(GREEN)✅ Production setup complete!$(NC)"
 
 # =================================================
-# DEVELOPMENT COMMANDS
+# MAIN DEVELOPMENT COMMANDS
 # =================================================
 
 .PHONY: dev
-dev: setup ## Start development environment
-	@echo "$(BLUE)Starting development environment...$(NC)"
-	$(DOCKER_COMPOSE) up --build
-
-.PHONY: dev-detached
-dev-detached: setup ## Start development environment in background
-	@echo "$(BLUE)Starting development environment in background...$(NC)"
-	$(DOCKER_COMPOSE) up -d --build
-	@make status
-
-.PHONY: dev-rebuild
-dev-rebuild: ## Rebuild and start development environment
-	@echo "$(BLUE)Rebuilding development environment...$(NC)"
-	$(DOCKER_COMPOSE) up --build --force-recreate
-
-.PHONY: dev-local
-dev-local: ## Start development server locally without Docker or Redis
-	@echo "$(BLUE)Starting local development server (no Docker, no Redis)...$(NC)"
-	@if [ ! -f .env ]; then \
-		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
-		cp env.example .env; \
-		echo "$(GREEN)✅ Created .env file$(NC)"; \
-	fi
-	@mkdir -p logs
-	@echo "$(GREEN)🚀 Starting local proxy server...$(NC)"
-	@echo "$(CYAN)Environment: Local development (no Docker, no Redis)$(NC)"
-	@echo "$(CYAN)Proxy will be available at: http://127.0.0.1:8080$(NC)"
-	@echo "$(CYAN)Test with: curl -x http://127.0.0.1:8080 http://httpbin.org/get$(NC)"
-	@PROXY_LISTEN_ADDR=127.0.0.1:8080 \
-	 UPSTREAM_URL=http://httpbin.org \
-	 TLS_ENABLED=false \
-	 RUST_LOG=info \
-	 cargo run --bin rust-forward-proxy --no-default-features
-
-.PHONY: dev-local-intercept
-dev-local-intercept: ## Start local server with HTTPS interception (logs all HTTP/HTTPS content)
-	@echo "$(BLUE)Starting local development server with HTTPS interception...$(NC)"
+dev: setup ## Start local development with HTTPS interception (use CERT=securly for Securly CA)
+	@echo "$(BLUE)Starting local development with HTTPS interception...$(NC)"
 	@if [ ! -f .env ]; then \
 		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
 		cp env.example .env; \
 		echo "$(GREEN)✅ Created .env file$(NC)"; \
 	fi
 	@mkdir -p logs certs
-	@echo "$(GREEN)🔒 Starting proxy with HTTPS interception...$(NC)"
-	@echo "$(CYAN)Environment: Local development with HTTPS interception$(NC)"
-	@echo "$(CYAN)Proxy: http://127.0.0.1:8080$(NC)"
-	@echo "$(CYAN)🔍 HTTP requests: Full content logging$(NC)"
-	@echo "$(CYAN)🔍 HTTPS requests: Intercepted and fully logged!$(NC)"
-	@echo "$(YELLOW)⚠️  Browser will show certificate warnings (normal for self-signed certs)$(NC)"
-	@echo "$(CYAN)Test HTTP: curl -x http://127.0.0.1:8080 http://httpbin.org/get$(NC)"
-	@echo "$(CYAN)Test HTTPS: curl -x http://127.0.0.1:8080 https://httpbin.org/get --proxy-insecure$(NC)"
-	@PROXY_LISTEN_ADDR=127.0.0.1:8080 \
+	@# Use CERT environment variable to select certificate type
+	@CERT_TYPE="$${CERT:-rootca}"; \
+	echo "$(CYAN)Selected certificate type: $$CERT_TYPE$(NC)"; \
+	if [ "$$CERT_TYPE" = "securly" ]; then \
+		CA_CERT_PATH="ca-certs/securly_ca.crt"; \
+		CA_KEY_PATH="ca-certs/securly_ca.key"; \
+		echo "$(GREEN)🔒 Starting proxy with Securly CA certificates...$(NC)"; \
+		echo "$(CYAN)📜 CA Certificate: $$CA_CERT_PATH$(NC)"; \
+		if [ ! -f "$$CA_KEY_PATH" ]; then \
+			echo "$(YELLOW)⚠️  Warning: securly_ca.key not found - will fallback to self-signed certificates$(NC)"; \
+		fi; \
+		echo "$(YELLOW)⚠️  Make sure to install securly_ca.crt in your browser$(NC)"; \
+	else \
+		CA_CERT_PATH="ca-certs/rootCA.crt"; \
+		CA_KEY_PATH="ca-certs/rootCA.key"; \
+		echo "$(GREEN)🔒 Starting proxy with rootCA certificates...$(NC)"; \
+		echo "$(CYAN)📜 CA Certificate: $$CA_CERT_PATH$(NC)"; \
+		echo "$(YELLOW)⚠️  Make sure to install rootCA.crt in your browser$(NC)"; \
+	fi; \
+	echo "$(CYAN)Environment: Local development with HTTPS interception$(NC)"; \
+	echo "$(CYAN)Proxy: http://127.0.0.1:8080$(NC)"; \
+	echo "$(CYAN)🔍 HTTP requests: INFO level logging$(NC)"; \
+	echo "$(CYAN)🔍 HTTPS requests: Intercepted and fully logged at INFO level$(NC)"; \
+	echo "$(CYAN)🔐 CONNECT requests: DEBUG level only (hidden at INFO)$(NC)"; \
+	echo "$(CYAN)📁 Logs: Console + File (logs/proxy.log.YYYY-MM-DD)$(NC)"; \
+	echo "$(CYAN)Test HTTP: curl -x http://127.0.0.1:8080 http://httpbin.org/get$(NC)"; \
+	echo "$(CYAN)Test HTTPS: curl -x http://127.0.0.1:8080 https://httpbin.org/get --proxy-insecure$(NC)"; \
+	echo "$(CYAN)Debug mode: RUST_LOG=debug make dev$(NC)"; \
+	echo "$(CYAN)Usage: CERT=securly make dev$(NC)"; \
+	PROXY_LISTEN_ADDR=127.0.0.1:8080 \
 	 HTTPS_INTERCEPTION_ENABLED=true \
 	 TLS_ENABLED=false \
+	 TLS_CA_CERT_PATH="$$CA_CERT_PATH" \
+	 TLS_CA_KEY_PATH="$$CA_KEY_PATH" \
 	 UPSTREAM_URL=http://httpbin.org \
 	 RUST_LOG=info \
 	 cargo run --bin rust-forward-proxy --no-default-features
+
+.PHONY: dev-securly
+dev-securly: setup ## Start local development with Securly CA certificates
+	@echo "$(GREEN)🔒 Starting with Securly CA certificates...$(NC)"
+	@CERT=securly $(MAKE) dev
+
+.PHONY: dev-docker
+dev-docker: setup ## Start development environment with Docker
+	@echo "$(BLUE)Starting development environment with Docker...$(NC)"
+	$(DOCKER_COMPOSE) up --build
+
+.PHONY: dev-docker-detached
+dev-docker-detached: setup ## Start Docker development environment in background
+	@echo "$(BLUE)Starting Docker development environment in background...$(NC)"
+	$(DOCKER_COMPOSE) up -d --build
+	@make status
 
 .PHONY: setup-ca
 setup-ca: ## Generate root CA certificate for browser installation
@@ -149,8 +156,8 @@ setup-ca: ## Generate root CA certificate for browser installation
 	@echo ""
 	@echo "$(GREEN)📖 Next steps: See BROWSER_SETUP.md for complete browser configuration guide$(NC)"
 
-.PHONY: browser-help
-browser-help: ## Show browser setup instructions
+.PHONY: help-browser
+help-browser: ## Show browser setup instructions
 	@echo "$(GREEN)🌐 Browser HTTPS Interception Setup$(NC)"
 	@echo "======================================"
 	@echo ""
@@ -158,13 +165,13 @@ browser-help: ## Show browser setup instructions
 	@echo "1. $(YELLOW)make setup-ca$(NC)                    # Generate root certificate"
 	@echo "2. Install certificate in browser    # See BROWSER_SETUP.md" 
 	@echo "3. Configure proxy: 127.0.0.1:8080   # In browser settings"
-	@echo "4. $(YELLOW)make dev-local-intercept$(NC)          # Start intercepting proxy"
+	@echo "4. $(YELLOW)make dev$(NC)                         # Start intercepting proxy"
 	@echo ""
 	@echo "$(GREEN)📖 Complete guide: BROWSER_SETUP.md$(NC)"
 	@echo ""
 
-.PHONY: cache-help
-cache-help: ## Show certificate caching information
+.PHONY: help-cache
+help-cache: ## Show certificate caching information
 	@echo "$(GREEN)🔒 Certificate Caching System$(NC)"
 	@echo "==============================="
 	@echo ""
@@ -174,15 +181,32 @@ cache-help: ## Show certificate caching information
 	@echo "• 25-30x faster HTTPS interception!"
 	@echo ""
 	@echo "$(CYAN)Cache Backends:$(NC)"
-	@echo "• $(YELLOW)Local dev$(NC):  In-memory cache (1000 certs max)"
+	@echo "• $(YELLOW)Local$(NC):      In-memory cache (1000 certs max)"
 	@echo "• $(YELLOW)Docker$(NC):     Redis cache (unlimited, shared)"
 	@echo ""
 	@echo "$(CYAN)Commands:$(NC)"
-	@echo "• $(YELLOW)make dev-local-intercept$(NC)  # Test with memory cache"
-	@echo "• $(YELLOW)make dev$(NC)                  # Test with Redis cache"
+	@echo "• $(YELLOW)make dev$(NC)                  # Test with memory cache"
+	@echo "• $(YELLOW)make dev-docker$(NC)           # Test with Redis cache"
 	@echo "• $(YELLOW)make cache-clear-redis$(NC)    # Clear Redis certificate cache"
 	@echo ""
 	@echo "$(GREEN)📖 Full documentation: CERTIFICATE_CACHING.md$(NC)"
+	@echo ""
+
+.PHONY: help-logging
+help-logging: ## Show logging configuration help
+	@echo "$(GREEN)📋 Logging Configuration$(NC)"
+	@echo "=========================="
+	@echo ""
+	@echo "$(CYAN)Log Levels:$(NC)"
+	@echo "• $(YELLOW)INFO$(NC):   HTTP/HTTPS requests visible, CONNECT hidden"
+	@echo "• $(YELLOW)DEBUG$(NC):  All requests visible including CONNECT"
+	@echo ""
+	@echo "$(CYAN)Examples:$(NC)"
+	@echo "• $(YELLOW)make dev$(NC)                  # INFO level (production-like)"
+	@echo "• $(YELLOW)RUST_LOG=debug make dev$(NC)   # DEBUG level (verbose)"
+	@echo "• $(YELLOW)RUST_LOG=trace make dev$(NC)   # TRACE level (very verbose)"
+	@echo ""
+	@echo "$(GREEN)📖 Full documentation: LOGGING_CHANGES.md$(NC)"
 	@echo ""
 
 .PHONY: cache-clear-redis
@@ -205,45 +229,62 @@ cache-clear-redis: ## Clear Redis certificate cache
 	fi
 
 # =================================================
-# PRODUCTION COMMANDS
+# MAIN PRODUCTION COMMANDS
 # =================================================
 
 .PHONY: prod
-prod: setup-prod ## Start production environment
-	@echo "$(BLUE)Starting production environment...$(NC)"
+prod: setup-prod ## Start local production server
+	@echo "$(BLUE)Starting local production server...$(NC)"
+	@if [ ! -f .env ]; then \
+		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
+		cp env.example .env; \
+		echo "$(GREEN)✅ Created .env file$(NC)"; \
+	fi
+	@mkdir -p logs certs
+	@echo "$(GREEN)🚀 Starting production proxy server...$(NC)"
+	@echo "$(CYAN)Environment: Local production$(NC)"
+	@echo "$(CYAN)Proxy: http://127.0.0.1:8080$(NC)"
+	@echo "$(CYAN)Log Level: INFO (CONNECT requests hidden, HTTP/HTTPS visible)$(NC)"
+	@echo "$(CYAN)HTTPS Interception: Enabled$(NC)"
+	@echo "$(CYAN)Test HTTP: curl -x http://127.0.0.1:8080 http://httpbin.org/get$(NC)"
+	@echo "$(CYAN)Test HTTPS: curl -x http://127.0.0.1:8080 https://httpbin.org/get --proxy-insecure$(NC)"
+	@PROXY_LISTEN_ADDR=127.0.0.1:8080 \
+	 HTTPS_INTERCEPTION_ENABLED=true \
+	 TLS_ENABLED=false \
+	 UPSTREAM_URL=http://httpbin.org \
+	 RUST_LOG=info \
+	 cargo run --bin rust-forward-proxy --release --no-default-features
+
+.PHONY: prod-docker
+prod-docker: setup-prod ## Start production environment with Docker
+	@echo "$(BLUE)Starting production environment with Docker...$(NC)"
 	$(DOCKER_COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 	@make status
 
-.PHONY: prod-deploy
-prod-deploy: setup-prod ## Deploy to production (pull latest images)
-	@echo "$(BLUE)Deploying to production...$(NC)"
+.PHONY: prod-docker-deploy
+prod-docker-deploy: setup-prod ## Deploy to production with Docker (pull latest images)
+	@echo "$(BLUE)Deploying to production with Docker...$(NC)"
 	$(DOCKER_COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml pull
 	$(DOCKER_COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 	@make status
 
-.PHONY: prod-restart
-prod-restart: ## Restart production services
-	@echo "$(BLUE)Restarting production services...$(NC)"
-	$(DOCKER_COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml restart
-	@make status
-
 # =================================================
-# UTILITY COMMANDS
+# DOCKER UTILITY COMMANDS
 # =================================================
 
-.PHONY: stop
-stop: ## Stop all services
-	@echo "$(YELLOW)Stopping services...$(NC)"
+.PHONY: docker-stop
+docker-stop: ## Stop all Docker services
+	@echo "$(YELLOW)Stopping Docker services...$(NC)"
 	$(DOCKER_COMPOSE) stop
 
-.PHONY: down
-down: ## Stop and remove containers
-	@echo "$(YELLOW)Stopping and removing containers...$(NC)"
+.PHONY: docker-down
+docker-down: ## Stop and remove Docker containers
+	@echo "$(YELLOW)Stopping and removing Docker containers...$(NC)"
 	$(DOCKER_COMPOSE) down
 
-.PHONY: down-volumes
-down-volumes: ## Stop and remove containers with volumes
-	@echo "$(RED)Stopping and removing containers with volumes...$(NC)"
+.PHONY: docker-down-volumes
+docker-down-volumes: ## Stop and remove Docker containers with volumes
+	@echo "$(RED)Stopping and removing Docker containers with volumes...$(NC)"
 	@echo "$(YELLOW)⚠️  This will delete all Redis data!$(NC)"
 	@read -p "Are you sure? [y/N] " -n 1 -r; \
 	echo ""; \
@@ -253,44 +294,35 @@ down-volumes: ## Stop and remove containers with volumes
 		echo "$(GREEN)Cancelled.$(NC)"; \
 	fi
 
-.PHONY: restart
-restart: ## Restart all services
-	@echo "$(BLUE)Restarting services...$(NC)"
+.PHONY: docker-restart
+docker-restart: ## Restart Docker services
+	@echo "$(BLUE)Restarting Docker services...$(NC)"
 	$(DOCKER_COMPOSE) restart
 	@make status
 
-.PHONY: status
-status: ## Show service status
-	@echo "$(BLUE)Service Status:$(NC)"
-	$(DOCKER_COMPOSE) ps
-
-.PHONY: logs
-logs: ## Show logs from all services
+.PHONY: docker-logs
+docker-logs: ## Show logs from all Docker services
 	$(DOCKER_COMPOSE) logs -f
 
-.PHONY: logs-proxy
-logs-proxy: ## Show logs from proxy service only
+.PHONY: docker-logs-proxy
+docker-logs-proxy: ## Show logs from proxy service only
 	$(DOCKER_COMPOSE) logs -f rust-proxy
 
-.PHONY: logs-redis
-logs-redis: ## Show logs from Redis service only
+.PHONY: docker-logs-redis
+docker-logs-redis: ## Show logs from Redis service only
 	$(DOCKER_COMPOSE) logs -f redis
+
+.PHONY: status
+status: ## Show Docker service status
+	@echo "$(BLUE)Docker Service Status:$(NC)"
+	$(DOCKER_COMPOSE) ps
 
 # =================================================
 # TESTING COMMANDS
 # =================================================
 
 .PHONY: test
-test: ## Run basic proxy tests
-	@echo "$(BLUE)Testing proxy functionality...$(NC)"
-	@PROXY_PORT=$$(grep PROXY_PORT .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "8080"); \
-	echo "$(YELLOW)Testing proxy on port $$PROXY_PORT...$(NC)"; \
-	if curl -s -f --max-time 10 -x http://localhost:$$PROXY_PORT http://httpbin.org/get > /dev/null; then \
-		echo "$(GREEN)✅ Proxy test passed$(NC)"; \
-	else \
-		echo "$(RED)❌ Proxy test failed$(NC)"; \
-		exit 1; \
-	fi
+test: test-local ## Run default proxy tests (alias for test-local)
 
 .PHONY: test-redis
 test-redis: ## Test Redis connection
@@ -303,24 +335,24 @@ test-redis: ## Test Redis connection
 	fi
 
 .PHONY: test-all
-test-all: test test-redis ## Run all tests
+test-all: test-local test-intercept test-docker test-redis ## Run all tests
 
 .PHONY: test-local
-test-local: ## Test local proxy without Docker
-	@echo "$(BLUE)Testing local proxy (no Docker)...$(NC)"
-	@echo "$(YELLOW)Make sure 'make dev-local' is running in another terminal first$(NC)"
+test-local: ## Test local proxy
+	@echo "$(BLUE)Testing local proxy...$(NC)"
+	@echo "$(YELLOW)Make sure 'make dev' is running in another terminal first$(NC)"
 	@if curl -s -f --max-time 10 -x http://127.0.0.1:8080 http://httpbin.org/get > /dev/null; then \
 		echo "$(GREEN)✅ Local proxy test passed$(NC)"; \
 	else \
 		echo "$(RED)❌ Local proxy test failed$(NC)"; \
-		echo "$(YELLOW)💡 Make sure to run 'make dev-local' in another terminal first$(NC)"; \
+		echo "$(YELLOW)💡 Make sure to run 'make dev' in another terminal first$(NC)"; \
 		exit 1; \
 	fi
 
 .PHONY: test-intercept
 test-intercept: ## Test HTTPS interception proxy
 	@echo "$(BLUE)Testing HTTPS interception proxy...$(NC)"
-	@echo "$(YELLOW)Make sure 'make dev-local-intercept' is running in another terminal first$(NC)"
+	@echo "$(YELLOW)Make sure 'make dev' is running in another terminal first$(NC)"
 	@echo "$(CYAN)Testing HTTP request...$(NC)"
 	@if curl -s -f --max-time 10 -x http://127.0.0.1:8080 http://httpbin.org/get > /dev/null; then \
 		echo "$(GREEN)✅ HTTP test passed$(NC)"; \
@@ -337,18 +369,30 @@ test-intercept: ## Test HTTPS interception proxy
 		exit 1; \
 	fi
 
+.PHONY: test-docker
+test-docker: ## Test Docker proxy
+	@echo "$(BLUE)Testing Docker proxy...$(NC)"
+	@PROXY_PORT=$$(grep PROXY_PORT .env 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "8080"); \
+	echo "$(YELLOW)Testing Docker proxy on port $$PROXY_PORT...$(NC)"; \
+	if curl -s -f --max-time 10 -x http://localhost:$$PROXY_PORT http://httpbin.org/get > /dev/null; then \
+		echo "$(GREEN)✅ Docker proxy test passed$(NC)"; \
+	else \
+		echo "$(RED)❌ Docker proxy test failed$(NC)"; \
+		exit 1; \
+	fi
+
 # =================================================
 # MAINTENANCE COMMANDS
 # =================================================
 
 .PHONY: clean
-clean: down ## Clean up containers and images
+clean: docker-down ## Clean up Docker containers and images
 	@echo "$(YELLOW)Cleaning up Docker resources...$(NC)"
 	docker system prune -f
 	@echo "$(GREEN)✅ Cleanup complete$(NC)"
 
 .PHONY: clean-all
-clean-all: down-volumes ## Clean up everything including volumes and images
+clean-all: docker-down-volumes ## Clean up everything including volumes and images
 	@echo "$(RED)Cleaning up all Docker resources...$(NC)"
 	@echo "$(YELLOW)⚠️  This will delete all data and images!$(NC)"
 	@read -p "Are you sure? [y/N] " -n 1 -r; \
@@ -388,31 +432,31 @@ restore-redis: ## Restore Redis data from backup (interactive)
 	fi
 
 # =================================================
-# DEVELOPMENT UTILITIES
+# DOCKER BUILD & DEPLOYMENT
 # =================================================
 
-.PHONY: shell-proxy
-shell-proxy: ## Open shell in proxy container
-	$(DOCKER_COMPOSE) exec rust-proxy /bin/sh
-
-.PHONY: shell-redis
-shell-redis: ## Open Redis CLI
-	$(DOCKER_COMPOSE) exec redis redis-cli
-
 .PHONY: build
-build: ## Build containers without starting
+build: ## Build Docker containers without starting
 	$(DOCKER_COMPOSE) build
 
 .PHONY: pull
-pull: ## Pull latest images
+pull: ## Pull latest Docker images
 	$(DOCKER_COMPOSE) pull
 
-.PHONY: config
-config: ## Show resolved Docker Compose configuration
+.PHONY: docker-shell-proxy
+docker-shell-proxy: ## Open shell in proxy container
+	$(DOCKER_COMPOSE) exec rust-proxy /bin/sh
+
+.PHONY: docker-shell-redis
+docker-shell-redis: ## Open Redis CLI
+	$(DOCKER_COMPOSE) exec redis redis-cli
+
+.PHONY: docker-config
+docker-config: ## Show resolved Docker Compose configuration
 	$(DOCKER_COMPOSE) config
 
-.PHONY: config-prod
-config-prod: ## Show resolved production Docker Compose configuration
+.PHONY: docker-config-prod
+docker-config-prod: ## Show resolved production Docker Compose configuration
 	$(DOCKER_COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml config
 
 # =================================================
@@ -420,8 +464,8 @@ config-prod: ## Show resolved production Docker Compose configuration
 # =================================================
 
 .PHONY: health
-health: ## Check health of all services
-	@echo "$(BLUE)Checking service health...$(NC)"
+health: ## Check health of Docker services
+	@echo "$(BLUE)Checking Docker service health...$(NC)"
 	@echo "$(YELLOW)Docker Compose Status:$(NC)"
 	@$(DOCKER_COMPOSE) ps
 	@echo ""
@@ -440,19 +484,9 @@ health: ## Check health of all services
 		echo "$(RED)❌ Proxy: Unhealthy$(NC)"; \
 	fi
 
-.PHONY: stats
-stats: ## Show Docker container stats
+.PHONY: docker-stats
+docker-stats: ## Show Docker container stats
 	docker stats --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.PIDs}}"
-
-# =================================================
-# QUICK COMMANDS
-# =================================================
-
-.PHONY: up
-up: dev-detached ## Quick start (alias for dev-detached)
-
-.PHONY: start
-start: dev-detached ## Quick start (alias for dev-detached)
 
 # Note: Phony targets to prevent conflicts with files of the same name
 .PHONY: all

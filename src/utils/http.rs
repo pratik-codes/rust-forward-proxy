@@ -195,3 +195,152 @@ pub fn build_forwarding_request(request_data: &RequestData) -> Result<Request<Bo
     
     Ok(request)
 }
+
+/// Log headers in a structured JSON format
+pub fn log_headers_structured(headers: &HeaderMap, title: &str) {
+    use tracing::info;
+    use serde_json::{json, Map, Value};
+    
+    if headers.is_empty() {
+        info!("📋 {} (empty)", title);
+        return;
+    }
+    
+    let mut header_map = Map::new();
+    let mut cookie_headers = Vec::new();
+    
+    for (name, value) in headers {
+        if let Ok(value_str) = value.to_str() {
+            let name_str = name.as_str();
+            if name_str.to_lowercase() == "cookie" {
+                // Separate cookies for special handling
+                cookie_headers.push(value_str.to_string());
+            } else {
+                header_map.insert(name_str.to_string(), Value::String(value_str.to_string()));
+            }
+        }
+    }
+    
+    // Log the structured headers
+    info!("📋 {}:", title);
+    if !header_map.is_empty() {
+        let headers_json = json!(header_map);
+        info!("{}", serde_json::to_string_pretty(&headers_json).unwrap_or_default());
+    }
+    
+    // Log cookies separately in a structured format if present
+    if !cookie_headers.is_empty() {
+        log_cookies_structured(&cookie_headers);
+    }
+}
+
+/// Log cookies in a structured JSON format
+pub fn log_cookies_structured(cookie_headers: &[String]) {
+    use tracing::info;
+    use serde_json::{json, Map, Value};
+    
+    let mut all_cookies = Map::new();
+    
+    for cookie_header in cookie_headers {
+        let cookies = parse_cookies(cookie_header);
+        for (name, value) in cookies {
+            all_cookies.insert(name, Value::String(value));
+        }
+    }
+    
+    if !all_cookies.is_empty() {
+        info!("🍪 Request Cookies:");
+        let cookies_json = json!(all_cookies);
+        info!("{}", serde_json::to_string_pretty(&cookies_json).unwrap_or_default());
+    }
+}
+
+/// Log response headers in a structured JSON format
+pub fn log_response_headers_structured(headers: &HeaderMap) {
+    use tracing::info;
+    use serde_json::{json, Map, Value};
+    
+    if headers.is_empty() {
+        info!("📋 Response Headers (empty)");
+        return;
+    }
+    
+    let mut header_map = Map::new();
+    let mut set_cookie_headers = Vec::new();
+    
+    for (name, value) in headers {
+        if let Ok(value_str) = value.to_str() {
+            let name_str = name.as_str();
+            if name_str.to_lowercase() == "set-cookie" {
+                // Collect set-cookie headers for special handling
+                set_cookie_headers.push(value_str.to_string());
+            } else {
+                header_map.insert(name_str.to_string(), Value::String(value_str.to_string()));
+            }
+        }
+    }
+    
+    // Log the structured headers
+    info!("📋 Response Headers:");
+    if !header_map.is_empty() {
+        let headers_json = json!(header_map);
+        info!("{}", serde_json::to_string_pretty(&headers_json).unwrap_or_default());
+    }
+    
+    // Log set-cookie headers separately in a structured format if present
+    if !set_cookie_headers.is_empty() {
+        log_set_cookies_structured(&set_cookie_headers);
+    }
+}
+
+/// Log Set-Cookie headers in a structured format
+pub fn log_set_cookies_structured(set_cookie_headers: &[String]) {
+    use tracing::info;
+    use serde_json::{json, Map, Value};
+    
+    if set_cookie_headers.is_empty() {
+        return;
+    }
+    
+    info!("🍪 Response Set-Cookie Headers:");
+    let mut cookies_array = Vec::new();
+    
+    for cookie_str in set_cookie_headers {
+        // Parse each set-cookie header (they can have attributes like path, domain, etc.)
+        let parts: Vec<&str> = cookie_str.split(';').collect();
+        if let Some(cookie_part) = parts.first() {
+            if let Some(eq_pos) = cookie_part.find('=') {
+                let name = cookie_part[..eq_pos].trim();
+                let value = cookie_part[eq_pos + 1..].trim();
+                
+                let mut cookie_obj = Map::new();
+                cookie_obj.insert("name".to_string(), Value::String(name.to_string()));
+                cookie_obj.insert("value".to_string(), Value::String(value.to_string()));
+                
+                // Add attributes if any
+                if parts.len() > 1 {
+                    let mut attributes = Map::new();
+                    for attr in &parts[1..] {
+                        let attr = attr.trim();
+                        if let Some(eq_pos) = attr.find('=') {
+                            let attr_name = attr[..eq_pos].trim();
+                            let attr_value = attr[eq_pos + 1..].trim();
+                            attributes.insert(attr_name.to_string(), Value::String(attr_value.to_string()));
+                        } else {
+                            // Boolean attributes like HttpOnly, Secure
+                            attributes.insert(attr.to_string(), Value::Bool(true));
+                        }
+                    }
+                    if !attributes.is_empty() {
+                        cookie_obj.insert("attributes".to_string(), Value::Object(attributes));
+                    }
+                }
+                
+                cookies_array.push(Value::Object(cookie_obj));
+            }
+        }
+    }
+    
+    let cookies_json = json!(cookies_array);
+    info!("{}", serde_json::to_string_pretty(&cookies_json).unwrap_or_default());
+}

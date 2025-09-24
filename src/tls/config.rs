@@ -40,6 +40,14 @@ pub fn create_client_config(tls_config: &TlsConfig) -> Result<Arc<ClientConfig>>
     // Add system root certificates for proper certificate validation
     add_system_root_certificates(&mut root_store)?;
     
+    // Add custom root CA certificate if specified
+    if let Some(root_ca_path) = &tls_config.root_ca_cert_path {
+        if let Err(e) = add_custom_root_ca(&mut root_store, root_ca_path) {
+            tracing::warn!("Failed to load custom root CA: {}", e);
+            info!("   Continuing with system root certificates only");
+        }
+    }
+    
     let config = if tls_config.skip_upstream_cert_verify {
         info!("⚠️  WARNING: Skipping upstream certificate verification (insecure)");
         ClientConfig::builder()
@@ -126,6 +134,27 @@ fn add_system_root_certificates(root_store: &mut RootCertStore) -> Result<()> {
             info!("⚠️  Could not load system root certificates: {}", e);
             info!("   Certificate verification will use empty root store");
             Ok(())
+        }
+    }
+}
+
+/// Add custom root CA certificate to the root store
+pub fn add_custom_root_ca(root_store: &mut RootCertStore, root_ca_path: &str) -> Result<()> {
+    debug!("Loading custom root CA certificate from {}", root_ca_path);
+    
+    use crate::tls::cert_gen::{load_root_ca_cert, validate_ca_certificate};
+    
+    let ca_cert = load_root_ca_cert(root_ca_path)?;
+    validate_ca_certificate(&ca_cert)?;
+    
+    match root_store.add(&ca_cert) {
+        Ok(_) => {
+            info!("✅ Custom root CA certificate added to trust store");
+            info!("   Certificate: {}", root_ca_path);
+            Ok(())
+        }
+        Err(e) => {
+            Err(anyhow!("Failed to add custom root CA to trust store: {:?}", e))
         }
     }
 }

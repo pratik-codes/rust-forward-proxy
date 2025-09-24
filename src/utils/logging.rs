@@ -8,27 +8,33 @@ use tracing::info;
 
 /// Log incoming request information
 pub fn log_incoming_request(method: &str, uri: &str, remote_addr: &SocketAddr) {
-    // Clean INFO log - single line
-    info!("📥 {} {} from {}", method, uri, remote_addr.ip());
-    
-    // Verbose DEBUG log with details
-    log_debug!("🔍 REQUEST DETAILS:\n  Method: {}\n  URI: {}\n  Remote: {}", 
-               method, uri, remote_addr);
+    // Log based on request type
+    if method == "CONNECT" {
+        // CONNECT requests at DEBUG level
+        log_debug!("🔐 {} {} from {}", method, uri, remote_addr.ip());
+        log_debug!("🔍 CONNECT DETAILS:\n  Method: {}\n  URI: {}\n  Remote: {}", 
+                   method, uri, remote_addr);
+    } else {
+        // HTTP/HTTPS requests at INFO level
+        info!("📥 {} {} from {}", method, uri, remote_addr.ip());
+        log_debug!("🔍 REQUEST DETAILS:\n  Method: {}\n  URI: {}\n  Remote: {}", 
+                   method, uri, remote_addr);
+    }
 }
 
 /// Log CONNECT request details
 pub fn log_connect_request(uri: &str) {
-    // Clean INFO log for CONNECT
-    info!("🔐 CONNECT tunnel to {}", uri);
+    // CONNECT requests at DEBUG level
+    log_debug!("🔐 CONNECT to {} (will intercept)", uri);
     
     // Verbose DEBUG log for CONNECT details
-    log_debug!("🔐 CONNECT REQUEST:\n  Target: {}\n  Tunneling HTTPS traffic - bypassing interception", uri);
+    log_debug!("🔐 CONNECT REQUEST:\n  Target: {}\n  Will intercept HTTPS traffic for full visibility", uri);
 }
 
 /// Log successful CONNECT tunnel establishment
 pub fn log_connect_success(host: &str, port: u16, connect_time: u128) {
-    // Clean INFO log for successful connection
-    info!("✅ Tunnel established to {}:{} ({}ms)", host, port, connect_time);
+    // CONNECT success at DEBUG level
+    log_debug!("✅ Tunnel established to {}:{} ({}ms)", host, port, connect_time);
     
     // Verbose DEBUG log with full details
     log_debug!("✅ CONNECT SUCCESS:\n  Target: {}:{}\n  Connect Time: {}ms\n  Setting up bidirectional tunnel", 
@@ -37,8 +43,8 @@ pub fn log_connect_success(host: &str, port: u16, connect_time: u128) {
 
 /// Log failed CONNECT attempt
 pub fn log_connect_failure(host: &str, port: u16, connect_time: u128, error: &str) {
-    // Clean INFO log for failed connection
-    info!("❌ CONNECT failed to {}:{} ({}ms): {}", host, port, connect_time, error);
+    // CONNECT failure at DEBUG level
+    log_debug!("❌ CONNECT failed to {}:{} ({}ms): {}", host, port, connect_time, error);
     
     // Verbose DEBUG log with full details
     log_debug!("❌ CONNECT FAILURE:\n  Target: {}:{}\n  Time: {}ms\n  Error: {}", 
