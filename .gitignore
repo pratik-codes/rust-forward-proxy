@@ -1,5 +1,8 @@
 target/
 docs/*.log
 logs/*
+*.log
 ca-certs/*
 certs/*
+# Test certificates that might contain sensitive data
+test_certs/*
