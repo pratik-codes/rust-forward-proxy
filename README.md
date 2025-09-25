@@ -166,12 +166,12 @@ REDIS_URL=redis://redis:6379
 - **[Certificate Management](docs/CERTIFICATES.md)** - Complete certificate guide
 
 ### **🏗️ Architecture & Implementation**
-- **[Architecture Overview](docs/ARCHITECTURE.md)** - System design and flow diagrams
+- **[Architecture Overview](docs/architecture.md)** - System design and flow diagrams
 - **[TLS Implementation](docs/CERTIFICATES.md)** - HTTPS termination and certificate handling
-- **[Performance Optimization](docs/PERFORMANCE.md)** - Caching, pooling, and benchmarks
+- **[Performance Optimization](docs/performance.md)** - Caching, pooling, and benchmarks
 
 ### **🚀 Deployment & Operations**
-- **[Deployment Guide](docs/DEPLOYMENT.md)** - Docker, Kubernetes, cloud deployment
+- **[Deployment Guide](docs/deployment.md)** - Docker, Kubernetes, cloud deployment
 - **[Configuration Reference](docs/CONFIGURATION.md)** - Complete config documentation
 - **[CLI Reference](docs/CONFIGURATION.md)** - CLI commands and configuration options
 
