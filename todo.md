@@ -1,0 +1,6 @@
+- amazon linux 2023 check for current proxy
+- add two utility
+  - add header
+  - remove header
+  - append header
+- script for perfomance

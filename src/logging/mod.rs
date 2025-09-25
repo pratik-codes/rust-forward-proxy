@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Once;
 use tracing::Level;
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
 use tracing_appender::{rolling, non_blocking};
 use tracing_log::LogTracer;
 
@@ -148,9 +148,84 @@ pub fn init_logger_with_level(level: Level) {
     });
 }
 
+/// Initialize logger with configuration parameters
+/// This is the recommended way to initialize logging with explicit configuration
+pub fn init_logger_with_config(log_level: &str, enable_file_logging: bool) {
+    INIT.call_once(|| {
+        // Parse log level from string
+        let level = log_level
+            .parse::<LevelFilter>()
+            .unwrap_or(LevelFilter::Info);
+        
+        log::set_max_level(level);
+
+        // Create console layer
+        let console_layer = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_level(true)
+            .with_ansi(true)
+            .pretty();
+
+        if enable_file_logging {
+            // Ensure logs directory exists only if file logging is enabled
+            if let Err(e) = ensure_logs_directory() {
+                eprintln!("Warning: Failed to create logs directory: {:?}", e);
+            }
+
+            // Create file appender for daily rolling logs
+            let file_appender = rolling::daily("logs", "proxy.log");
+            let (non_blocking_file, _guard) = non_blocking(file_appender);
+
+            // Create file layer
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_file(true)
+                .with_line_number(true)
+                .with_level(true)
+                .with_ansi(false) // No ANSI codes in files
+                .with_writer(non_blocking_file);
+
+            // Initialize subscriber with both console and file layers
+            let subscriber = Registry::default()
+                .with(EnvFilter::new(log_level))
+                .with(console_layer)
+                .with(file_layer);
+
+            if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+                eprintln!("Failed to set global subscriber: {}", e);
+            }
+
+            // Initialize log-to-tracing bridge
+            LogTracer::init().expect("Failed to set logger");
+
+            // Store the guard to prevent early cleanup
+            Box::leak(Box::new(_guard));
+        } else {
+            // Initialize subscriber with console layer only
+            let subscriber = Registry::default()
+                .with(EnvFilter::new(log_level))
+                .with(console_layer);
+
+            if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+                eprintln!("Failed to set global subscriber: {}", e);
+            }
+
+            // Initialize log-to-tracing bridge
+            LogTracer::init().expect("Failed to set logger");
+        }
+    });
+}
+
 /// Initialize logger with environment variable support and optional file logging
 /// Uses RUST_LOG environment variable for configuration
 /// Uses PROXY_ENABLE_FILE_LOGGING environment variable to control file logging (default: true)
+/// DEPRECATED: Use init_logger_with_config instead for better configuration management
 pub fn init_logger_with_env() {
     INIT.call_once(|| {
         // Check if file logging is enabled via environment variable

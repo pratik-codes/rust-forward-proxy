@@ -220,9 +220,31 @@ pub struct ClientStats {
     pub tcp_keepalive_interval_secs: u64,
 }
 
-/// Utility functions for client configuration from environment variables
+/// Utility functions for client configuration from environment variables and config
 impl HttpClient {
+    /// Create HTTP client with configuration from the config struct
+    /// This is the recommended way to create an HTTP client with explicit configuration
+    pub fn from_config(http_client_config: &crate::config::settings::HttpClientConfig) -> Self {
+        let config = ClientConfig {
+            max_idle_per_host: http_client_config.max_idle_per_host as usize,
+            idle_timeout: Duration::from_secs(http_client_config.idle_timeout_secs),
+            connect_timeout: Duration::from_secs(http_client_config.connect_timeout_secs),
+            enable_http2: http_client_config.enable_http2,
+            http2_initial_stream_window_size: Some(http_client_config.http2_stream_window_size),
+            http2_initial_connection_window_size: Some(http_client_config.http2_connection_window_size),
+            http2_keep_alive_interval: Some(Duration::from_secs(http_client_config.http2_keepalive_interval_secs)),
+            http2_keep_alive_timeout: Some(Duration::from_secs(http_client_config.http2_keepalive_timeout_secs)),
+            http2_max_concurrent_streams: Some(http_client_config.http2_max_concurrent_streams),
+            tcp_keepalive: http_client_config.tcp_keepalive,
+            tcp_keepalive_interval: Some(Duration::from_secs(http_client_config.tcp_keepalive_interval_secs)),
+        };
+
+        info!("🔧 Loading HTTP client configuration from config file");
+        Self::with_config(config)
+    }
+
     /// Create HTTP client with advanced configuration from environment variables
+    /// DEPRECATED: Use from_config instead for better configuration management
     pub fn from_env() -> Self {
         let config = ClientConfig {
             max_idle_per_host: std::env::var("PROXY_MAX_IDLE_PER_HOST")

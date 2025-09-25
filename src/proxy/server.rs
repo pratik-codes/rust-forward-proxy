@@ -25,9 +25,42 @@ pub struct ProxyServer {
     cert_manager: Arc<CertificateManager>,
     client_manager: Arc<HttpClient>,
     body_handler: Arc<SmartBodyHandler>,
+    tls_config: crate::config::settings::TlsConfig,
 }
 
 impl ProxyServer {
+    /// Create a new proxy server with configuration
+    /// This is the recommended way to create a proxy server
+    pub fn with_config(listen_addr: SocketAddr, config: &crate::config::settings::ProxyConfig) -> Self {
+        Self { 
+            listen_addr,
+            https_interception: false, // Default to false for backward compatibility
+            cert_manager: Arc::new(CertificateManager::new()),
+            client_manager: Arc::new(HttpClient::from_config(&config.http_client)),
+            body_handler: Arc::new(SmartBodyHandler::from_config(&config.streaming)),
+            tls_config: config.tls.clone(),
+        }
+    }
+
+    /// Create a new proxy server with HTTPS interception and configuration
+    /// This is the recommended way to create a proxy server with HTTPS interception
+    pub fn with_https_interception_and_config(listen_addr: SocketAddr, enable_interception: bool, config: &crate::config::settings::ProxyConfig) -> Self {
+        let cert_manager = Arc::new(CertificateManager::new());
+        let client_manager = Arc::new(HttpClient::from_config(&config.http_client));
+        let body_handler = Arc::new(SmartBodyHandler::from_config(&config.streaming));
+        
+        Self {
+            listen_addr,
+            https_interception: enable_interception,
+            cert_manager,
+            client_manager,
+            body_handler,
+            tls_config: config.tls.clone(),
+        }
+    }
+
+    /// Create a new proxy server (legacy method)
+    /// DEPRECATED: Use with_config instead for better configuration management
     pub fn new(listen_addr: SocketAddr) -> Self {
         Self { 
             listen_addr,
@@ -35,9 +68,12 @@ impl ProxyServer {
             cert_manager: Arc::new(CertificateManager::new()),
             client_manager: Arc::new(HttpClient::from_env()),
             body_handler: Arc::new(SmartBodyHandler::from_env()),
+            tls_config: crate::config::settings::TlsConfig::default(),
         }
     }
     
+    /// Create a new proxy server with HTTPS interception (legacy method)
+    /// DEPRECATED: Use with_https_interception_and_config instead for better configuration management
     pub fn with_https_interception(listen_addr: SocketAddr, enable_interception: bool) -> Self {
         let cert_manager = Arc::new(CertificateManager::new());
         let client_manager = Arc::new(HttpClient::from_env());
@@ -53,6 +89,7 @@ impl ProxyServer {
             cert_manager,
             client_manager,
             body_handler,
+            tls_config: crate::config::settings::TlsConfig::default(),
         }
     }
 
@@ -70,11 +107,13 @@ impl ProxyServer {
         let cert_manager = Arc::clone(&self.cert_manager);
         let client_manager = Arc::clone(&self.client_manager);
         let body_handler = Arc::clone(&self.body_handler);
+        let tls_config = self.tls_config.clone();
         let make_svc = make_service_fn(move |conn: &hyper::server::conn::AddrStream| {
             let remote_addr = conn.remote_addr();
             let cert_manager = Arc::clone(&cert_manager);
             let client_manager = Arc::clone(&client_manager);
             let body_handler = Arc::clone(&body_handler);
+            let tls_config = tls_config.clone();
             log_debug!("New connection from: {}", remote_addr);
 
             async move { 
@@ -82,7 +121,10 @@ impl ProxyServer {
                     let cert_manager = Arc::clone(&cert_manager);
                     let client_manager = Arc::clone(&client_manager);
                     let body_handler = Arc::clone(&body_handler);
-                    handle_request(req, remote_addr, https_interception, cert_manager, client_manager, body_handler)
+                    let tls_config = tls_config.clone();
+                    async move {
+                        handle_request(req, remote_addr, https_interception, cert_manager, client_manager, body_handler, &tls_config).await
+                    }
                 })) 
             }
         });
@@ -108,6 +150,7 @@ pub async fn handle_request(
     cert_manager: Arc<CertificateManager>,
     client_manager: Arc<HttpClient>,
     body_handler: Arc<SmartBodyHandler>,
+    tls_config: &crate::config::settings::TlsConfig,
 ) -> Result<Response<Body>, Infallible> {
     let start_time = std::time::Instant::now();
     let method = req.method().to_string();
@@ -134,7 +177,7 @@ pub async fn handle_request(
     
     // Handle CONNECT requests - always intercept HTTPS
     if method == "CONNECT" {
-        return handle_connect_request(req, request_data, start_time, https_interception, cert_manager, client_manager, body_handler).await;
+        return handle_connect_request(req, request_data, start_time, https_interception, cert_manager, client_manager, body_handler, tls_config).await;
     } else {
         // Extract and process regular HTTP request data
         extract_request_data(&mut request_data, &uri, req).await;
@@ -193,6 +236,7 @@ async fn handle_https_interception(
     cert_manager: Arc<CertificateManager>,
     client_manager: Arc<HttpClient>,
     body_handler: Arc<SmartBodyHandler>,
+    tls_config: &crate::config::settings::TlsConfig,
 ) -> Result<Response<Body>, Infallible> {
     let connect_time = start_time.elapsed().as_millis();
     
@@ -208,10 +252,12 @@ async fn handle_https_interception(
             info!("💾 Generating new certificate for {} ({} ms)", host, connect_time);
             
             // Generate new certificate - try CA-signed, fall back to self-signed
-            let ca_cert_path = std::env::var("TLS_CA_CERT_PATH").unwrap_or_else(|_| "ca-certs/rootCA.crt".to_string());
-            let ca_key_path = std::env::var("TLS_CA_KEY_PATH").unwrap_or_else(|_| "ca-certs/rootCA.key".to_string());
+            let default_ca_cert = "ca-certs/rootCA.crt".to_string();
+            let default_ca_key = "ca-certs/rootCA.key".to_string();
+            let ca_cert_path = tls_config.ca_cert_path.as_ref().unwrap_or(&default_ca_cert);
+            let ca_key_path = tls_config.ca_key_path.as_ref().unwrap_or(&default_ca_key);
             
-            let cert_data = match generate_domain_cert_with_ca(&host, &ca_cert_path, &ca_key_path) {
+            let cert_data = match generate_domain_cert_with_ca(&host, ca_cert_path, ca_key_path) {
                 Ok(cert) => cert,
                 Err(e) => {
                     error!("Failed to generate certificate for {}: {}", host, e);
@@ -234,10 +280,12 @@ async fn handle_https_interception(
             info!("💾 Generating new certificate (cache unavailable)");
             
             // Generate without caching on cache error
-            let ca_cert_path = std::env::var("TLS_CA_CERT_PATH").unwrap_or_else(|_| "ca-certs/rootCA.crt".to_string());
-            let ca_key_path = std::env::var("TLS_CA_KEY_PATH").unwrap_or_else(|_| "ca-certs/rootCA.key".to_string());
+            let default_ca_cert = "ca-certs/rootCA.crt".to_string();
+            let default_ca_key = "ca-certs/rootCA.key".to_string();
+            let ca_cert_path = tls_config.ca_cert_path.as_ref().unwrap_or(&default_ca_cert);
+            let ca_key_path = tls_config.ca_key_path.as_ref().unwrap_or(&default_ca_key);
             
-            match generate_domain_cert_with_ca(&host, &ca_cert_path, &ca_key_path) {
+            match generate_domain_cert_with_ca(&host, ca_cert_path, ca_key_path) {
                 Ok(cert) => cert,
                 Err(e) => {
                     error!("Failed to generate certificate for {}: {}", host, e);
@@ -554,6 +602,7 @@ async fn handle_connect_request(
     cert_manager: Arc<CertificateManager>,
     client_manager: Arc<HttpClient>,
     body_handler: Arc<SmartBodyHandler>,
+    tls_config: &crate::config::settings::TlsConfig,
 ) -> Result<Response<Body>, Infallible> {
     log_connect_request(&request_data.url);
     
@@ -573,7 +622,7 @@ async fn handle_connect_request(
     
     // Always intercept HTTPS for full visibility - CONNECT logging at DEBUG level
     log_debug!("🔍 CONNECT {}:{} - INTERCEPTING (will decrypt and log HTTPS)", host, port);
-    handle_https_interception(req, host, port, start_time, cert_manager, client_manager, body_handler).await
+    handle_https_interception(req, host, port, start_time, cert_manager, client_manager, body_handler, tls_config).await
 }
 
 /// Extract and process HTTP request data

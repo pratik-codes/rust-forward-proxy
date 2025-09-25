@@ -95,7 +95,7 @@ impl ServerArgs {
     pub async fn start_server(&self) -> Result<()> {
         info!("🚀 Starting proxy server with CLI configuration");
         
-        let config = self.to_config()?;
+        let config: ProxyConfig = self.to_config()?;
         
         // Show startup information
         info!("📋 Server Configuration:");

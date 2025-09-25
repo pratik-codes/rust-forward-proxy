@@ -14,7 +14,7 @@ pub mod utils;
 
 // Re-export commonly used items
 pub use error::{Error, Result};
-pub use logging::{init_logger, init_logger_with_env, log_info, log_error, log_debug, log_warning, log_trace};
+pub use logging::{init_logger, init_logger_with_env, init_logger_with_config, log_info, log_error, log_debug, log_warning, log_trace};
 pub use models::{ProxyLog, RequestData, ResponseData};
 pub use proxy::server::ProxyServer;
 pub use config::settings::ProxyConfig;

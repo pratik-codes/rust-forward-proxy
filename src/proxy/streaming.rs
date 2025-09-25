@@ -34,7 +34,19 @@ impl Default for StreamingConfig {
 }
 
 impl StreamingConfig {
+    /// Create streaming config from the config struct
+    /// This is the recommended way to create streaming configuration
+    pub fn from_config(streaming_config: &crate::config::settings::StreamingConfig) -> Self {
+        Self {
+            max_log_body_size: streaming_config.max_log_body_size,
+            max_partial_log_size: streaming_config.max_partial_log_size,
+            enable_response_streaming: streaming_config.enable_response_streaming,
+            enable_request_streaming: streaming_config.enable_request_streaming,
+        }
+    }
+
     /// Create streaming config from environment variables
+    /// DEPRECATED: Use from_config instead for better configuration management
     pub fn from_env() -> Self {
         Self {
             max_log_body_size: std::env::var("PROXY_MAX_LOG_BODY_SIZE")
@@ -71,6 +83,10 @@ impl SmartBodyHandler {
         info!("   Request streaming enabled: {}", config.enable_request_streaming);
         
         Self { config }
+    }
+
+    pub fn from_config(streaming_config: &crate::config::settings::StreamingConfig) -> Self {
+        Self::new(StreamingConfig::from_config(streaming_config))
     }
 
     pub fn from_env() -> Self {

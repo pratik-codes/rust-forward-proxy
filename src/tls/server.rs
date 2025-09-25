@@ -130,7 +130,7 @@ async fn handle_tls_connection(
 async fn handle_tls_request(
     req: Request<Body>,
     remote_addr: SocketAddr,
-    _config: ProxyConfig,
+    config: ProxyConfig,
 ) -> Result<Response<Body>, Infallible> {
     debug!("🔒 Processing decrypted HTTPS request from {}", remote_addr);
 
@@ -142,11 +142,11 @@ async fn handle_tls_request(
     // This provides complete transparency into HTTPS traffic
     // Create a dummy certificate manager for TLS-terminated requests (no interception needed)
     let cert_manager = Arc::new(crate::tls::CertificateManager::new());
-    // Create optimized HTTP client for performance
-    let client_manager = Arc::new(crate::proxy::http_client::HttpClient::from_env());
-    // Create smart body handler for streaming optimization
-    let body_handler = Arc::new(crate::proxy::streaming::SmartBodyHandler::from_env());
-    handle_request(req, remote_addr, false, cert_manager, client_manager, body_handler).await // Don't enable HTTPS interception here since we're already handling TLS
+    // Create optimized HTTP client for performance with configuration
+    let client_manager = Arc::new(crate::proxy::http_client::HttpClient::from_config(&config.http_client));
+    // Create smart body handler for streaming optimization with configuration
+    let body_handler = Arc::new(crate::proxy::streaming::SmartBodyHandler::from_config(&config.streaming));
+    handle_request(req, remote_addr, false, cert_manager, client_manager, body_handler, &config.tls).await // Don't enable HTTPS interception here since we're already handling TLS
 }
 
 /// Start both HTTP and HTTPS servers concurrently
