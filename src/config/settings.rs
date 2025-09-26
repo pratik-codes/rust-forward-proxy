@@ -37,6 +37,9 @@ pub struct ProxyConfig {
     
     /// Streaming configuration
     pub streaming: StreamingConfig,
+    
+    /// Runtime configuration
+    pub runtime: RuntimeConfig,
 }
 
 /// Upstream server configuration
@@ -128,6 +131,16 @@ pub struct StreamingConfig {
     pub enable_request_streaming: bool,
 }
 
+/// Runtime configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeConfig {
+    /// Runtime mode: "single_threaded" or "multi_threaded"
+    pub mode: String,
+    
+    /// Number of worker threads for multi-threaded mode (0 = auto-detect CPU cores)
+    pub worker_threads: Option<usize>,
+}
+
 /// TLS configuration for HTTPS interception
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
@@ -187,6 +200,7 @@ impl Default for ProxyConfig {
             logging: LoggingConfig::default(),
             http_client: HttpClientConfig::default(),
             streaming: StreamingConfig::default(),
+            runtime: RuntimeConfig::default(),
         }
     }
 }
@@ -245,6 +259,15 @@ impl Default for StreamingConfig {
             max_partial_log_size: 1024, // 1KB
             enable_response_streaming: true,
             enable_request_streaming: false,
+        }
+    }
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            mode: "multi_threaded".to_string(), // Default to multi-threaded for backward compatibility
+            worker_threads: None, // Auto-detect CPU cores
         }
     }
 }
@@ -524,6 +547,17 @@ impl ProxyConfig {
         
         if let Ok(enable) = std::env::var("PROXY_ENABLE_REQUEST_STREAMING") {
             config.streaming.enable_request_streaming = enable.to_lowercase() == "true";
+        }
+        
+        // Load runtime settings
+        if let Ok(mode) = std::env::var("PROXY_RUNTIME_MODE") {
+            config.runtime.mode = mode;
+        }
+        
+        if let Ok(threads) = std::env::var("PROXY_WORKER_THREADS") {
+            if let Ok(threads) = threads.parse() {
+                config.runtime.worker_threads = Some(threads);
+            }
         }
         
         config

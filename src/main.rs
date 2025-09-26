@@ -6,13 +6,10 @@ use rust_forward_proxy::{
     ProxyServer,
     ProxyConfig,
     tls::start_dual_servers,
+    runtime::run_with_runtime,
 };
 
-
-
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     // Load configuration from YAML file or fallback to environment variables
     let config = ProxyConfig::load_config()
         .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
@@ -22,6 +19,12 @@ async fn main() -> anyhow::Result<()> {
 
     log_info!("Starting Forward Proxy Server");
     
+    // Clone the runtime config and run the async main function
+    let runtime_config = config.runtime.clone();
+    run_with_runtime(&runtime_config, async_main(config))
+}
+
+async fn async_main(config: ProxyConfig) -> anyhow::Result<()> {
     // Log startup information
     log_info!("Proxy server starting on {}", config.listen_addr);
     if config.tls.enabled {
@@ -29,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
         log_info!("TLS interception: {}", if config.tls.interception_enabled { "ENABLED" } else { "DISABLED" });
     }
     log_info!("Console-only logging enabled");
+    log_info!("log added");
 
     if config.tls.enabled {
         // Start both HTTP and HTTPS servers

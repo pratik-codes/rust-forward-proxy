@@ -61,3 +61,8 @@ streaming:
   max_partial_log_size: 1024  # 1KB
   enable_response_streaming: true
   enable_request_streaming: false
+
+# Runtime configuration
+runtime:
+  mode: "single_threaded"  # Options: "single_threaded" or "multi_threaded"
+  worker_threads: null    # Number of worker threads (null = auto-detect CPU cores)

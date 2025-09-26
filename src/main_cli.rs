@@ -5,6 +5,8 @@ use rust_forward_proxy::{
     cli::{CertCommand, ServerArgs},
     init_logger_with_env,
     log_info, log_error,
+    ProxyConfig,
+    runtime::run_with_runtime,
 };
 use tracing::error;
 
@@ -38,8 +40,7 @@ enum Commands {
     Cert(CertCommand),
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     
     // Initialize logging based on CLI arguments
@@ -53,6 +54,18 @@ async fn main() -> anyhow::Result<()> {
     
     init_logger_with_env();
     
+    // Try to load config from YAML file first, or use CLI defaults
+    let config = ProxyConfig::load_config().unwrap_or_else(|_| {
+        log_info!("⚠️  No config.yml found, using CLI defaults");
+        ProxyConfig::default()
+    });
+    
+    // Clone the runtime config and run the async main function
+    let runtime_config = config.runtime.clone();
+    run_with_runtime(&runtime_config, async_main_cli(cli, config))
+}
+
+async fn async_main_cli(cli: Cli, _config: ProxyConfig) -> anyhow::Result<()> {
     // Handle commands
     match cli.command {
         Some(Commands::Server(args)) => {

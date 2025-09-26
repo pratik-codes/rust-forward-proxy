@@ -33,7 +33,7 @@ pub fn init_logger() {
         }
 
         // Create file appender for daily rolling logs
-        let file_appender = rolling::daily("logs", "proxy.log");
+        let file_appender = rolling::never("logs", "proxy.log");
         let (non_blocking_file, _guard) = non_blocking(file_appender);
 
         // Create console layer
@@ -88,7 +88,7 @@ pub fn init_logger_with_level(level: Level) {
         }
 
         // Create file appender for daily rolling logs
-        let file_appender = rolling::daily("logs", "proxy.log");
+        let file_appender = rolling::never("logs", "proxy.log");
         let (non_blocking_file, _guard) = non_blocking(file_appender);
 
         // Create console layer
@@ -177,7 +177,7 @@ pub fn init_logger_with_config(log_level: &str, enable_file_logging: bool) {
             }
 
             // Create file appender for daily rolling logs
-            let file_appender = rolling::daily("logs", "proxy.log");
+            let file_appender = rolling::never("logs", "proxy.log");
             let (non_blocking_file, _guard) = non_blocking(file_appender);
 
             // Create file layer
@@ -260,7 +260,7 @@ pub fn init_logger_with_env() {
             }
 
             // Create file appender for daily rolling logs
-            let file_appender = rolling::daily("logs", "proxy.log");
+            let file_appender = rolling::never("logs", "proxy.log");
             let (non_blocking_file, _guard) = non_blocking(file_appender);
 
             // Create file layer
