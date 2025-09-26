@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use crate::proxy::core::ProxyImplConfig;
 use std::path::Path;
 use anyhow::{Context, Result};
 
@@ -37,6 +38,10 @@ pub struct ProxyConfig {
     
     /// Streaming configuration
     pub streaming: StreamingConfig,
+    
+    /// Proxy implementation configuration (new pluggable architecture)
+    #[serde(default)]
+    pub proxy_implementation: ProxyImplConfig,
 }
 
 /// Upstream server configuration
@@ -187,6 +192,7 @@ impl Default for ProxyConfig {
             logging: LoggingConfig::default(),
             http_client: HttpClientConfig::default(),
             streaming: StreamingConfig::default(),
+            proxy_implementation: ProxyImplConfig::default(),
         }
     }
 }

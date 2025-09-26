@@ -357,7 +357,7 @@ main() {
     
     # Start the proxy server
     print_status "Starting proxy server..."
-    RUST_LOG=debug cargo run > logs/proxy.log 2>&1 &
+    RUST_LOG=debug cargo run --bin rust-forward-proxy > logs/proxy.log 2>&1 &
     PROXY_PID=$!
     
     # Wait for proxy to be ready

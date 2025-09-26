@@ -3,24 +3,27 @@
 use rust_forward_proxy::{
     init_logger_with_config,
     log_info,
-    ProxyServer,
     ProxyConfig,
-    tls::start_dual_servers,
+    ForwardProxy,
 };
+use pingora::prelude::*;
+// use std::sync::Arc;
 
 
 
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() {
     // Load configuration from YAML file or fallback to environment variables
     let config = ProxyConfig::load_config()
-        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        });
 
     // Initialize production-grade logging with configuration
     init_logger_with_config(&config.log_level, config.logging.enable_file_logging);
 
-    log_info!("Starting Forward Proxy Server");
+    log_info!("Starting Pingora-based Forward Proxy Server");
     
     // Log startup information
     log_info!("Proxy server starting on {}", config.listen_addr);
@@ -30,26 +33,33 @@ async fn main() -> anyhow::Result<()> {
     }
     log_info!("Console-only logging enabled");
 
-    if config.tls.enabled {
-        // Start both HTTP and HTTPS servers
-        log_info!("🚀 Starting dual HTTP/HTTPS proxy servers");
-        log_info!("Test HTTP: curl -x http://127.0.0.1:8080 http://httpbin.org/get");
-        log_info!("Test HTTPS: curl -x https://127.0.0.1:8443 https://httpbin.org/get");
-        
-        start_dual_servers(config).await?;
-    } else {
-        // Start only HTTP server
-        log_info!("🌐 Starting HTTP-only proxy server (TLS disabled)");
-        log_info!("Test with: curl -x http://127.0.0.1:8080 http://httpbin.org/get");
-        
-        if config.tls.interception_enabled {
-            tracing::debug!("🔍 HTTPS interception enabled - CONNECT requests to port 443 will be intercepted");
-            log_info!("⚠️  Clients will see certificate warnings (normal for self-signed certs)");
-        }
-        
-        let server = ProxyServer::with_https_interception_and_config(config.listen_addr, true, &config);
-        server.start().await?;
+    // Create pingora server
+    let mut my_server = Server::new(Some(Opt::parse_args())).unwrap();
+    my_server.bootstrap();
+
+    // Create the forward proxy with configuration
+    let forward_proxy = ForwardProxy::new(config.clone());
+
+    // Create HTTP proxy service
+    let mut proxy_service = pingora::proxy::http_proxy_service(
+        &my_server.configuration, 
+        forward_proxy
+    );
+    
+    // AddP traff TCP listener for HTTic
+    proxy_service.add_tcp(&config.listen_addr.to_string());
+    
+    log_info!("🚀 Starting Pingora-based proxy server");
+    log_info!("Test with: curl -x http://{} http://httpbin.org/get", config.listen_addr);
+    
+    if config.tls.interception_enabled {
+        log_info!("🔍 HTTPS interception enabled - CONNECT requests to port 443 will be intercepted");
+        log_info!("⚠️  Clients will see certificate warnings (normal for self-signed certs)");
     }
 
-    Ok(())
+    // Add the proxy service to the server
+    my_server.add_service(proxy_service);
+
+    // Start the server (this blocks)
+    my_server.run_forever();
 }

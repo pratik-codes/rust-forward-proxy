@@ -7,8 +7,16 @@ edition = "2021"
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
 
-# HTTP server and client
+# HTTP proxy server
+pingora = { version = "0.6", features = ["proxy", "lb"] }
+async-trait = "0.1"
+
+# Legacy HTTP support (for backward compatibility)
 hyper = { version = "0.14", features = ["full", "server", "client"] }
+hyper-rustls = "0.24"
+
+# Alternative HTTP implementations
+reqwest = { version = "0.11", features = ["json"] }
 
 # Additional support for proxying
 futures = "0.3"
@@ -22,7 +30,6 @@ serde_yaml = "0.9"
 # SSL/TLS support
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 tokio-rustls = "0.24"
-hyper-rustls = "0.24"
 
 # URL parsing
 url = "2.4"
@@ -78,3 +85,7 @@ path = "src/main.rs"
 [[bin]]
 name = "rust-forward-proxy-cli"
 path = "src/main_cli.rs"
+
+[[bin]]
+name = "rust-forward-proxy-pluggable"
+path = "src/main_pluggable.rs"
