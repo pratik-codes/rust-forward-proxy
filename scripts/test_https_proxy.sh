@@ -13,12 +13,22 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
-# Configuration
+# Configuration - support both development and production ports
 PROXY_HOST="127.0.0.1"
-HTTP_PORT="8080"
-HTTPS_PORT="8443"
+# Use environment variables or defaults
+HTTP_PORT="${HTTP_PROXY_PORT:-8080}"
+HTTPS_PORT="${HTTPS_PROXY_PORT:-8443}"
 HTTP_PROXY_URL="http://$PROXY_HOST:$HTTP_PORT"
 HTTPS_PROXY_URL="https://$PROXY_HOST:$HTTPS_PORT"
+
+# Production mode detection
+if [ "$HTTP_PORT" = "80" ] || [ "$HTTPS_PORT" = "443" ]; then
+    PRODUCTION_MODE=true
+    echo "🔧 Production mode detected (ports 80/443)"
+else
+    PRODUCTION_MODE=false
+    echo "🧪 Development mode detected (ports 8080/8443)"
+fi
 
 # Function to print colored output
 print_status() {
@@ -345,13 +355,25 @@ main() {
     fi
     
     # Start the proxy server with TLS enabled
-    print_status "Starting dual HTTP/HTTPS proxy server..."
-    TLS_ENABLED=true \
-    TLS_INTERCEPTION_ENABLED=true \
-    TLS_AUTO_GENERATE_CERT=true \
-    RUST_LOG=info \
-    cargo run --release > logs/https_proxy_test.log 2>&1 &
-    PROXY_PID=$!
+    print_status "Starting dual HTTP/HTTPS proxy server on ports $HTTP_PORT/$HTTPS_PORT..."
+    
+    if [ "$PRODUCTION_MODE" = true ]; then
+        print_status "Production mode: using sudo for privileged ports"
+        sudo TLS_ENABLED=true \
+        TLS_INTERCEPTION_ENABLED=true \
+        TLS_AUTO_GENERATE_CERT=true \
+        RUST_LOG=info \
+        cargo run --release --bin rust-forward-proxy > logs/https_proxy_test.log 2>&1 &
+        PROXY_PID=$!
+    else
+        print_status "Development mode: starting without sudo"
+        TLS_ENABLED=true \
+        TLS_INTERCEPTION_ENABLED=true \
+        TLS_AUTO_GENERATE_CERT=true \
+        RUST_LOG=info \
+        cargo run --release --bin rust-forward-proxy > logs/https_proxy_test.log 2>&1 &
+        PROXY_PID=$!
+    fi
     
     # Wait for proxy to be ready
     if ! wait_for_proxy; then

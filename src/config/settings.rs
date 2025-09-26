@@ -177,7 +177,7 @@ pub struct TlsConfig {
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
-            listen_addr: "127.0.0.1:8080".parse().unwrap(),
+            listen_addr: "127.0.0.1:80".parse().unwrap(),
             log_level: "info".to_string(),
             upstream: UpstreamConfig::default(),
             redis: RedisConfig::default(),
@@ -253,7 +253,7 @@ impl Default for TlsConfig {
     fn default() -> Self {
         Self {
             enabled: false, // Disabled by default for backward compatibility
-            https_listen_addr: "127.0.0.1:8443".parse().unwrap(),
+            https_listen_addr: "127.0.0.1:443".parse().unwrap(),
             cert_path: "certs/proxy.crt".to_string(),
             key_path: "certs/proxy.key".to_string(),
             interception_enabled: true, // Enable interception when TLS is enabled
@@ -282,17 +282,30 @@ impl ProxyConfig {
         Ok(config)
     }
     
-    /// Load configuration from a YAML file, with fallback to default values
+    /// Load configuration from YAML file with environment variable overrides
     pub fn load_config() -> Result<Self> {
-        let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.yml".to_string());
+        let config_path = "config.yml";
         
-        if Path::new(&config_path).exists() {
-            Self::from_yaml_file(&config_path)
+        let mut config = if Path::new(&config_path).exists() {
+            Self::from_yaml_file(&config_path)?
         } else {
-            // If config file doesn't exist, check for legacy environment variables
-            println!("Config file '{}' not found, falling back to environment variables", config_path);
-            Ok(Self::from_env_vars())
+            return Err(anyhow::anyhow!("Config file '{}' not found. Please ensure config.yml exists in the project root.", config_path));
+        };
+        
+        // Override with environment variables for development/testing
+        if let Ok(http_port) = std::env::var("HTTP_PROXY_PORT") {
+            if let Ok(port) = http_port.parse::<u16>() {
+                config.listen_addr = format!("127.0.0.1:{}", port).parse().unwrap();
+            }
         }
+        
+        if let Ok(https_port) = std::env::var("HTTPS_PROXY_PORT") {
+            if let Ok(port) = https_port.parse::<u16>() {
+                config.tls.https_listen_addr = format!("127.0.0.1:{}", port).parse().unwrap();
+            }
+        }
+        
+        Ok(config)
     }
     
     /// Legacy function to load configuration from environment variables

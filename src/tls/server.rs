@@ -159,7 +159,7 @@ pub async fn start_dual_servers(config: ProxyConfig) -> Result<()> {
         let https_config = config.clone();
 
         let http_server = tokio::spawn(async move {
-            let server = crate::proxy::server::ProxyServer::new(http_config.listen_addr);
+            let server = crate::proxy::server::ProxyServer::with_https_interception_and_config(http_config.listen_addr, true, &http_config);
             if let Err(e) = server.start().await {
                 error!("HTTP server failed: {}", e);
             }

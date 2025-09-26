@@ -33,14 +33,14 @@ async fn main() -> anyhow::Result<()> {
     if config.tls.enabled {
         // Start both HTTP and HTTPS servers
         log_info!("🚀 Starting dual HTTP/HTTPS proxy servers");
-        log_info!("Test HTTP: curl -x http://127.0.0.1:8080 http://httpbin.org/get");
-        log_info!("Test HTTPS: curl -x https://127.0.0.1:8443 https://httpbin.org/get");
+        log_info!("Test HTTP: curl -x http://{} http://httpbin.org/get", config.listen_addr);
+        log_info!("Test HTTPS: curl -x https://{} https://httpbin.org/get", config.tls.https_listen_addr);
         
         start_dual_servers(config).await?;
     } else {
         // Start only HTTP server
         log_info!("🌐 Starting HTTP-only proxy server (TLS disabled)");
-        log_info!("Test with: curl -x http://127.0.0.1:8080 http://httpbin.org/get");
+        log_info!("Test with: curl -x http://{} http://httpbin.org/get", config.listen_addr);
         
         if config.tls.interception_enabled {
             tracing::debug!("🔍 HTTPS interception enabled - CONNECT requests to port 443 will be intercepted");
