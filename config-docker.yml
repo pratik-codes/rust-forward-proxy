@@ -1,12 +1,12 @@
-# Rust Forward Proxy Configuration File
-# This file contains all configuration settings for the proxy server
+# Docker-specific Rust Forward Proxy Configuration
+# This file is used when running in Docker containers
+# Docker always uses privileged ports (80/443)
 
 # Basic proxy server settings
-# Set use_privileged_ports: true to use ports 80/443 (requires sudo)
-# Set use_privileged_ports: true to use ports 8080/8443 (no sudo required)
-use_privileged_ports: true 
-listen_addr: "127.0.0.1:8080"   # HTTP port (8080 for regular, 80 for privileged)
-log_level: "debug"
+# Docker runs with privileged ports (80/443)
+use_privileged_ports: true
+listen_addr: "0.0.0.0:8080"   # Will be overridden to 80 by use_privileged_ports
+log_level: "info"
 request_timeout: 30  # seconds
 max_body_size: 1048576  # 1MB in bytes
 
@@ -26,7 +26,7 @@ redis:
 # TLS/HTTPS configuration
 tls:
   enabled: true
-  https_listen_addr: "127.0.0.1:8443"   # HTTPS port (8443 for regular, 443 for privileged)
+  https_listen_addr: "0.0.0.0:8443"   # Will be overridden to 443 by use_privileged_ports
   cert_path: "certs/proxy.crt"
   key_path: "certs/proxy.key"
   interception_enabled: true
@@ -65,23 +65,9 @@ streaming:
   enable_response_streaming: true
   enable_request_streaming: false
 
-# Runtime Configuration
-# Choose your runtime mode:
-# - "single_threaded": Single process with one thread (simplest, good for development)
-# - "multi_threaded": Single process with multiple threads (good for high throughput)
-# - "multi_process": Multiple single-threaded processes (best for fault isolation and CPU utilization)
+# Runtime Configuration - Multi-Process Mode (4 single-threaded processes)
 runtime:
-  mode: "multi_process"           # Options: "single_threaded", "multi_threaded", "multi_process"
-  
-  # Multi-threaded mode settings (only used when mode = "multi_threaded")
-  worker_threads: null            # null = auto-detect CPU cores, or specify number (e.g., 4)
-  
-  # Multi-process mode settings (only used when mode = "multi_process")
+  mode: "multi_process"           # Run 4 separate single-threaded processes
+  worker_threads: null            # Not used in multi_process mode
   process_count: 4                # Number of single-threaded processes to spawn
-  use_reuseport: true             # Enable SO_REUSEPORT for load distribution (Linux/macOS only)
-  
-  # Port Configuration Examples:
-  # For development (no sudo required):
-  #   use_privileged_ports: true  -> HTTP: 8080, HTTPS: 8443
-  # For production (sudo required):
-  #   use_privileged_ports: true   -> HTTP: 80, HTTPS: 443
+  use_reuseport: true             # Enable SO_REUSEPORT for load distribution

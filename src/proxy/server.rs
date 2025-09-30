@@ -217,7 +217,10 @@ pub async fn handle_request(
     let method = req.method().to_string();
     let uri = req.uri().to_string();
 
-    // Log incoming request
+    // Log incoming request with current process PID
+    let current_pid = std::process::id();
+    info!("🎯 REQUEST HANDLER: PID {} processing {} {} from {}", 
+          current_pid, method, uri, remote_addr.ip());
     log_incoming_request(&method, &uri, &remote_addr);
 
     // Handle health check endpoint locally (don't forward to upstream)
@@ -253,6 +256,7 @@ async fn handle_health_check(
     method: String,
     start_time: std::time::Instant,
 ) -> Result<Response<Body>, Infallible> {
+    let current_pid = std::process::id();
     let elapsed_time = start_time.elapsed().as_millis();
     
     if method == "GET" {
@@ -262,7 +266,8 @@ async fn handle_health_check(
             "service": "rust-forward-proxy",
             "timestamp": chrono::Utc::now().to_rfc3339(),
             "uptime_ms": elapsed_time,
-            "version": env!("CARGO_PKG_VERSION")
+            "version": env!("CARGO_PKG_VERSION"),
+            "pid": current_pid
         });
         
         let response = Response::builder()
@@ -272,7 +277,7 @@ async fn handle_health_check(
             .body(Body::from(health_data.to_string()))
             .unwrap();
             
-        log_info!("✅ GET /health → 200 OK ({}ms)", elapsed_time);
+        log_info!("✅ GET /health → 200 OK ({}ms) - handled by PID {}", elapsed_time, current_pid);
         Ok(response)
     } else {
         // Health endpoint only supports GET
@@ -476,7 +481,9 @@ async fn handle_intercepted_request(
         format!("https://{}:{}{}", host, port, uri)
     };
     
-    info!("🔍 INTERCEPTED HTTPS: {} {} (decrypted from {}:{})", method, full_url, host, port);
+    let current_pid = std::process::id();
+    info!("🔍 INTERCEPTED HTTPS: PID {} handling {} {} (decrypted from {}:{})", 
+          current_pid, method, full_url, host, port);
     info!("⏱️  Request started at: {:?}", start_time);
     
     // Log request headers in structured format
@@ -728,7 +735,8 @@ async fn handle_http_request(
     client_manager: Arc<HttpClient>,
     body_handler: Arc<SmartBodyHandler>,
 ) -> Result<Response<Body>, Infallible> {
-    info!("🔍 Processing HTTP request with full interception");
+    let current_pid = std::process::id();
+    info!("🔍 Processing HTTP request with full interception - PID {}", current_pid);
     info!("⏱️  Request started at: {:?}", start_time);
     
     let prep_time = start_time.elapsed();

@@ -8,6 +8,10 @@ use anyhow::{Context, Result};
 /// Main configuration for the proxy server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
+    /// Use privileged ports (80/443) when true, regular ports (8080/8443) when false
+    #[serde(default)]
+    pub use_privileged_ports: bool,
+    
     /// Server listening address
     pub listen_addr: SocketAddr,
     
@@ -200,7 +204,8 @@ pub struct TlsConfig {
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
-            listen_addr: "127.0.0.1:80".parse().unwrap(),
+            use_privileged_ports: false, // Default to non-privileged ports
+            listen_addr: "127.0.0.1:8080".parse().unwrap(),
             log_level: "info".to_string(),
             upstream: UpstreamConfig::default(),
             redis: RedisConfig::default(),
@@ -312,8 +317,11 @@ impl ProxyConfig {
         let contents = std::fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read config file: {}", path.as_ref().display()))?;
         
-        let config: ProxyConfig = serde_yaml::from_str(&contents)
+        let mut config: ProxyConfig = serde_yaml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path.as_ref().display()))?;
+        
+        // Apply port configuration based on use_privileged_ports
+        config.apply_port_configuration();
         
         Ok(config)
     }
@@ -328,7 +336,7 @@ impl ProxyConfig {
             return Err(anyhow::anyhow!("Config file '{}' not found. Please ensure config.yml exists in the project root.", config_path));
         };
         
-        // Override with environment variables for development/testing
+        // Override with environment variables for development/testing (these take precedence over automatic port configuration)
         if let Ok(http_port) = std::env::var("HTTP_PROXY_PORT") {
             if let Ok(port) = http_port.parse::<u16>() {
                 config.listen_addr = format!("127.0.0.1:{}", port).parse().unwrap();
@@ -342,6 +350,20 @@ impl ProxyConfig {
         }
         
         Ok(config)
+    }
+    
+    /// Apply port configuration based on use_privileged_ports setting
+    /// This will override the ports in the configuration based on the use_privileged_ports flag
+    pub fn apply_port_configuration(&mut self) {
+        if self.use_privileged_ports {
+            // Use privileged ports (80/443) - requires sudo
+            self.listen_addr = "127.0.0.1:80".parse().unwrap();
+            self.tls.https_listen_addr = "127.0.0.1:443".parse().unwrap();
+        } else {
+            // Use regular ports (8080/8443) - no sudo required  
+            self.listen_addr = "127.0.0.1:8080".parse().unwrap();
+            self.tls.https_listen_addr = "127.0.0.1:8443".parse().unwrap();
+        }
     }
     
     /// Legacy function to load configuration from environment variables

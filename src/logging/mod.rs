@@ -8,10 +8,147 @@ use std::path::Path;
 use std::sync::Once;
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt, Registry};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FormatEvent, FormatFields};
 use tracing_appender::{rolling, non_blocking};
 use tracing_log::LogTracer;
+use std::fmt;
+use tracing::{Event, Subscriber};
+use tracing_subscriber::registry::LookupSpan;
 
 static INIT: Once = Once::new();
+
+/// Custom formatter for detailed logging with PID
+pub struct DetailedFormatter;
+
+impl<S, N> FormatEvent<S, N> for DetailedFormatter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        // Get the current timestamp
+        let now = chrono::Utc::now();
+        let timestamp = now.format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        
+        // Get the log level
+        let level = event.metadata().level();
+        
+        // Get the process ID
+        let process_id = std::process::id();
+        
+        // Get the thread ID  
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .replace("ThreadId(", "").replace(")", "");
+        
+        // Get the file name (without path)
+        let file = event.metadata().file().unwrap_or("unknown");
+        let file_name = std::path::Path::new(file)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown");
+        
+        // Get the line number
+        let line = event.metadata().line().unwrap_or(0);
+        
+        // Get the target (module path - we'll use this as function context)
+        let target = event.metadata().target();
+        let function_name = target.split("::").last().unwrap_or("unknown");
+        
+        // Format: LEVEL TIMESTAMP PID:X TID:Y FILENAME:LINE FUNCTION content
+        write!(
+            writer,
+            "{} {} PID:{} TID:{} {}:{} {} ",
+            level,
+            timestamp,
+            process_id,
+            thread_id,
+            file_name,
+            line,
+            function_name
+        )?;
+        
+        // Format the event fields (the actual log message)
+        ctx.field_format().format_fields(writer.by_ref(), event)?;
+        
+        writeln!(writer)
+    }
+}
+
+/// Custom file formatter (without colors for file output)
+pub struct FileFormatter;
+
+impl<S, N> FormatEvent<S, N> for FileFormatter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        // Get the current timestamp
+        let now = chrono::Utc::now();
+        let timestamp = now.format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        
+        // Get the log level
+        let level = event.metadata().level();
+        
+        // Get the process ID
+        let process_id = std::process::id();
+        
+        // Get the thread ID  
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .replace("ThreadId(", "").replace(")", "");
+        
+        // Get the file name (without path)
+        let file = event.metadata().file().unwrap_or("unknown");
+        let file_name = std::path::Path::new(file)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown");
+        
+        // Get the line number
+        let line = event.metadata().line().unwrap_or(0);
+        
+        // Get the target (module path - we'll use this as function context)
+        let target = event.metadata().target();
+        let function_name = target.split("::").last().unwrap_or("unknown");
+        
+        // Format: LEVEL TIMESTAMP PID:X TID:Y FILENAME:LINE FUNCTION content
+        write!(
+            writer,
+            "{} {} PID:{} TID:{} {}:{} {} ",
+            level,
+            timestamp,
+            process_id,
+            thread_id,
+            file_name,
+            line,
+            function_name
+        )?;
+        
+        // Format the event fields (the actual log message)
+        ctx.field_format().format_fields(writer.by_ref(), event)?;
+        
+        writeln!(writer)
+    }
+}
+
+/// Create a process information prefix for enhanced logging (backwards compatibility)
+pub fn process_info() -> String {
+    let process_id = std::process::id();
+    let thread_id = format!("{:?}", std::thread::current().id())
+        .replace("ThreadId(", "").replace(")", "");
+    format!("PID:{} TID:{}", process_id, thread_id)
+}
 
 /// Ensure the logs directory exists
 fn ensure_logs_directory() -> Result<()> {
@@ -36,26 +173,13 @@ pub fn init_logger() {
         let file_appender = rolling::never("logs", "proxy.log");
         let (non_blocking_file, _guard) = non_blocking(file_appender);
 
-        // Create console layer
+        // Create console layer with custom detailed formatter (includes PID)
         let console_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_ansi(true)
-            .pretty();
+            .event_format(DetailedFormatter);
 
-        // Create file layer
+        // Create file layer with custom file formatter (includes PID, no colors)
         let file_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_ansi(false) // No ANSI codes in files
+            .event_format(FileFormatter)
             .with_writer(non_blocking_file);
 
         // Initialize the subscriber with both console and file output
@@ -91,26 +215,13 @@ pub fn init_logger_with_level(level: Level) {
         let file_appender = rolling::never("logs", "proxy.log");
         let (non_blocking_file, _guard) = non_blocking(file_appender);
 
-        // Create console layer
+        // Create console layer with custom detailed formatter (includes PID)
         let console_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_ansi(true)
-            .pretty();
+            .event_format(DetailedFormatter);
 
-        // Create file layer
+        // Create file layer with custom file formatter (includes PID, no colors)
         let file_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_ansi(false) // No ANSI codes in files
+            .event_format(FileFormatter)
             .with_writer(non_blocking_file);
 
         // Create an EnvFilter from the level
@@ -159,16 +270,9 @@ pub fn init_logger_with_config(log_level: &str, enable_file_logging: bool) {
         
         log::set_max_level(level);
 
-        // Create console layer
+        // Create console layer with custom detailed formatter (includes PID)
         let console_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_ansi(true)
-            .pretty();
+            .event_format(DetailedFormatter);
 
         if enable_file_logging {
             // Ensure logs directory exists only if file logging is enabled
@@ -180,15 +284,9 @@ pub fn init_logger_with_config(log_level: &str, enable_file_logging: bool) {
             let file_appender = rolling::never("logs", "proxy.log");
             let (non_blocking_file, _guard) = non_blocking(file_appender);
 
-            // Create file layer
+            // Create file layer with custom file formatter (includes PID, no colors)
             let file_layer = tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_thread_ids(true)
-                .with_thread_names(true)
-                .with_file(true)
-                .with_line_number(true)
-                .with_level(true)
-                .with_ansi(false) // No ANSI codes in files
+                .event_format(FileFormatter)
                 .with_writer(non_blocking_file);
 
             // Initialize subscriber with both console and file layers
@@ -242,16 +340,9 @@ pub fn init_logger_with_env() {
         
         log::set_max_level(level);
 
-        // Create console layer
+        // Create console layer with custom detailed formatter (includes PID)
         let console_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_ansi(true)
-            .pretty();
+            .event_format(DetailedFormatter);
 
         if enable_file_logging {
             // Ensure logs directory exists only if file logging is enabled
@@ -263,15 +354,9 @@ pub fn init_logger_with_env() {
             let file_appender = rolling::never("logs", "proxy.log");
             let (non_blocking_file, _guard) = non_blocking(file_appender);
 
-            // Create file layer
+            // Create file layer with custom file formatter (includes PID, no colors)
             let file_layer = tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_thread_ids(true)
-                .with_thread_names(true)
-                .with_file(true)
-                .with_line_number(true)
-                .with_level(true)
-                .with_ansi(false) // No ANSI codes in files
+                .event_format(FileFormatter)
                 .with_writer(non_blocking_file);
 
             // Initialize the subscriber with both console and file output
@@ -319,16 +404,9 @@ pub fn init_console_only_logger() {
         
         log::set_max_level(level);
 
-        // Create console layer only
+        // Create console layer with custom detailed formatter (includes PID)
         let console_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_ansi(true)
-            .pretty();
+            .event_format(DetailedFormatter);
 
         // Initialize the subscriber with console output only
         tracing_subscriber::registry()

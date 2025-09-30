@@ -1,7 +1,0 @@
-- amazon linux 2023 check for current proxy
-- add two utility
-  - add header
-  - remove header
-  - append header
-- script for perfomance
-- make configurable flag config.yml to run the proxy on single thread or multiple

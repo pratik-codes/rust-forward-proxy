@@ -38,6 +38,7 @@ pub mod runtime {
             .context("Failed to get current executable path")?;
         
         let mut children = Vec::new();
+        let mut child_pids = Vec::new();
         
         // Set environment variables for all child processes
         env::set_var("PROXY_RUNTIME_MODE", "single_threaded");
@@ -59,10 +60,17 @@ pub mod runtime {
                 .spawn()
                 .context("Failed to spawn child process")?;
             
+            let child_pid = child.id();
+            info!("🔧 Child process {} spawned with PID: {}", i + 1, child_pid);
+            child_pids.push(child_pid);
+            
             children.push(child);
         }
         
+        // Log all subprocess PIDs in a summary
+        let pids_string = child_pids.iter().map(|pid| pid.to_string()).collect::<Vec<_>>().join(", ");
         info!("✅ All {} processes started successfully", process_count);
+        info!("🏷️  SUBPROCESS PIDs: [{}]", pids_string);
         
         // Wait for all child processes to complete
         for (i, mut child) in children.into_iter().enumerate() {

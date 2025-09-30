@@ -6,12 +6,49 @@ use crate::proxy::server::handle_request;
 use anyhow::{anyhow, Result};
 use hyper::service::service_fn;
 use hyper::{Body, Request, Response};
+use socket2::{Domain, Socket, Type};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, debug, error, warn};
+
+/// Create a socket with SO_REUSEPORT support for multi-process TLS binding
+fn create_reusable_tls_socket(addr: SocketAddr) -> Result<Socket> {
+    use std::env;
+    
+    let domain = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let socket = Socket::new(domain, Type::STREAM, None)?;
+    
+    // Enable SO_REUSEADDR (always good to have)
+    socket.set_reuse_address(true)?;
+    
+    // Enable SO_REUSEPORT if requested (Linux/macOS)
+    if env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true" {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            socket.set_reuse_port(true)?;
+            info!("✅ SO_REUSEPORT enabled for TLS multi-process support");
+        }
+        
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            warn!("⚠️  SO_REUSEPORT requested for TLS but not supported on this platform");
+        }
+    }
+    
+    // Set to non-blocking
+    socket.set_nonblocking(true)?;
+    
+    // Bind to address
+    socket.bind(&addr.into())?;
+    
+    // Listen with backlog
+    socket.listen(1024)?;
+    
+    Ok(socket)
+}
 
 /// TLS-enabled proxy server for HTTPS interception
 pub struct TlsProxyServer {
@@ -60,9 +97,18 @@ impl TlsProxyServer {
         // Create TLS acceptor
         let tls_acceptor = TlsAcceptor::from(server_config);
 
-        // Bind TCP listener
-        let listener = TcpListener::bind(&self.config.tls.https_listen_addr).await
-            .map_err(|e| anyhow!("Failed to bind HTTPS listener: {}", e))?;
+        // Bind TCP listener with SO_REUSEPORT support for multi-process mode
+        let listener = if std::env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true" {
+            // Use reusable socket for multi-process support
+            let socket = create_reusable_tls_socket(self.config.tls.https_listen_addr)?;
+            let std_listener = std::net::TcpListener::from(socket);
+            TcpListener::from_std(std_listener)
+                .map_err(|e| anyhow!("Failed to create TLS listener from reusable socket: {}", e))?
+        } else {
+            // Regular binding for single-process mode
+            TcpListener::bind(&self.config.tls.https_listen_addr).await
+                .map_err(|e| anyhow!("Failed to bind HTTPS listener: {}", e))?
+        };
 
         info!("🔒 TLS proxy server listening on https://{}", self.config.tls.https_listen_addr);
         info!("🌐 Ready to intercept HTTPS traffic!");
