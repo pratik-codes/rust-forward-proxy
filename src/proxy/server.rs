@@ -6,7 +6,7 @@ use crate::utils::{is_hop_by_hop_header, parse_url, extract_path, extract_query,
 use crate::tls::{generate_domain_cert_with_ca, create_server_config, CertificateManager};
 use crate::proxy::http_client::HttpClient;
 use crate::proxy::streaming::SmartBodyHandler;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use std::convert::Infallible;
@@ -154,6 +154,14 @@ impl ProxyServer {
             let body_handler = Arc::clone(&body_handler);
             let tls_config = tls_config.clone();
             log_debug!("New connection from: {}", remote_addr);
+            
+            // Check if we're in multi-process mode for load balancing
+            let is_multi_process = std::env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true";
+            let request_counter = if is_multi_process {
+                Some(Arc::new(std::sync::atomic::AtomicU32::new(0)))
+            } else {
+                None
+            };
 
             async move { 
                 Ok::<_, Infallible>(service_fn(move |req| {
@@ -161,8 +169,25 @@ impl ProxyServer {
                     let client_manager = Arc::clone(&client_manager);
                     let body_handler = Arc::clone(&body_handler);
                     let tls_config = tls_config.clone();
+                    let request_counter = request_counter.clone();
+                    
                     async move {
-                        handle_request(req, remote_addr, https_interception, cert_manager, client_manager, body_handler, &tls_config).await
+                        let response = handle_request(req, remote_addr, https_interception, cert_manager, client_manager, body_handler, &tls_config).await;
+                        
+                        // In multi-process mode, close connection after handling several requests
+                        // to force load balancing across processes
+                        if let Some(counter) = &request_counter {
+                            let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // Close connection after 20-50 requests (randomized to prevent thundering herd)
+                            let max_requests = 20 + (count % 30); // Random between 20-49 requests
+                            if count > max_requests {
+                                let mut response = response?;
+                                response.headers_mut().insert("Connection", "close".parse().unwrap());
+                                return Ok(response);
+                            }
+                        }
+                        
+                        response
                     }
                 })) 
             }
@@ -184,8 +209,8 @@ impl ProxyServer {
                 String::new()
             };
             
-            info!("🔄 Server binding with SO_REUSEPORT{}", process_info);
-            log_info!("Server binding with SO_REUSEPORT{}", process_info);
+            info!("🔄 Server binding with SO_REUSEPORT{} - load balancing enabled", process_info);
+            log_info!("Server binding with SO_REUSEPORT{} - load balancing enabled", process_info);
             
             Server::builder(hyper::server::conn::AddrIncoming::from_listener(tokio_listener)?)
                 .serve(make_svc)
