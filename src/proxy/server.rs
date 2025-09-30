@@ -6,7 +6,7 @@ use crate::utils::{is_hop_by_hop_header, parse_url, extract_path, extract_query,
 use crate::tls::{generate_domain_cert_with_ca, create_server_config, CertificateManager};
 use crate::proxy::http_client::HttpClient;
 use crate::proxy::streaming::SmartBodyHandler;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use std::convert::Infallible;
@@ -68,32 +68,34 @@ fn create_reusable_socket(addr: SocketAddr) -> Result<Socket> {
 impl ProxyServer {
     /// Create a new proxy server with configuration
     /// This is the recommended way to create a proxy server
-    pub fn with_config(listen_addr: SocketAddr, config: &crate::config::settings::ProxyConfig) -> Self {
-        Self { 
+    pub fn with_config(listen_addr: SocketAddr, config: &crate::config::settings::ProxyConfig) -> Result<Self> {
+        let cert_manager = Arc::new(CertificateManager::with_config(&config.tls, &config.redis)?);
+        
+        Ok(Self { 
             listen_addr,
             https_interception: false, // Default to false for backward compatibility
-            cert_manager: Arc::new(CertificateManager::new()),
+            cert_manager,
             client_manager: Arc::new(HttpClient::from_config(&config.http_client)),
             body_handler: Arc::new(SmartBodyHandler::from_config(&config.streaming)),
             tls_config: config.tls.clone(),
-        }
+        })
     }
 
     /// Create a new proxy server with HTTPS interception and configuration
     /// This is the recommended way to create a proxy server with HTTPS interception
-    pub fn with_https_interception_and_config(listen_addr: SocketAddr, enable_interception: bool, config: &crate::config::settings::ProxyConfig) -> Self {
-        let cert_manager = Arc::new(CertificateManager::new());
+    pub fn with_https_interception_and_config(listen_addr: SocketAddr, enable_interception: bool, config: &crate::config::settings::ProxyConfig) -> Result<Self> {
+        let cert_manager = Arc::new(CertificateManager::with_config(&config.tls, &config.redis)?);
         let client_manager = Arc::new(HttpClient::from_config(&config.http_client));
         let body_handler = Arc::new(SmartBodyHandler::from_config(&config.streaming));
         
-        Self {
+        Ok(Self {
             listen_addr,
             https_interception: enable_interception,
             cert_manager,
             client_manager,
             body_handler,
             tls_config: config.tls.clone(),
-        }
+        })
     }
 
     /// Create a new proxy server (legacy method)

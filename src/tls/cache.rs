@@ -291,7 +291,48 @@ pub struct CertificateManager {
 }
 
 impl CertificateManager {
-    /// Create a new certificate manager with automatic backend selection
+    /// Create a new certificate manager with configuration-based backend selection
+    pub fn with_config(tls_config: &crate::config::settings::TlsConfig, redis_config: &crate::config::settings::RedisConfig) -> Result<Self> {
+        let default_ttl = 24 * 60 * 60; // 24 hours
+        
+        match tls_config.certificate_storage.as_str() {
+            "redis" => {
+                #[cfg(feature = "redis-support")]
+                {
+                    match RedisCache::new(&redis_config.url, Some("proxy:cert:".to_string())) {
+                        Ok(redis_cache) => {
+                            info!("🚀 Using Redis certificate cache (configured)");
+                            Ok(Self {
+                                cache: Box::new(redis_cache),
+                                default_ttl,
+                            })
+                        }
+                        Err(e) => {
+                            error!("Failed to connect to Redis for certificate storage: {}", e);
+                            return Err(anyhow!("Redis certificate storage configured but Redis connection failed: {}", e));
+                        }
+                    }
+                }
+                #[cfg(not(feature = "redis-support"))]
+                {
+                    return Err(anyhow!("Redis certificate storage configured but redis-support feature not enabled"));
+                }
+            }
+            "cache" => {
+                info!("🧠 Using in-memory certificate cache (configured)");
+                Ok(Self {
+                    cache: Box::new(MemoryCache::new(1000)), // Max 1000 certificates
+                    default_ttl,
+                })
+            }
+            storage_type => {
+                return Err(anyhow!("Invalid certificate storage type '{}'. Must be 'cache' or 'redis'", storage_type));
+            }
+        }
+    }
+
+    /// Create a new certificate manager with automatic backend selection (deprecated)
+    /// This method is kept for backward compatibility
     pub fn new() -> Self {
         let default_ttl = 24 * 60 * 60; // 24 hours
         

@@ -39,6 +39,7 @@ tls:
   root_ca_cert_path: "ca-certs/securly_ca.crt"
   ca_cert_path: "ca-certs/rootCA.crt"
   ca_key_path: "ca-certs/rootCA.key"
+  certificate_storage: "cache"  # Options: "cache" (in-memory) or "redis"
 
 # Logging configuration
 logging:

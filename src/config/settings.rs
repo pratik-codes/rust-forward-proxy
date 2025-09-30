@@ -199,6 +199,9 @@ pub struct TlsConfig {
     
     /// Path to CA private key for signing domain certificates
     pub ca_key_path: Option<String>,
+    
+    /// Certificate storage backend: "cache" (in-memory) or "redis" 
+    pub certificate_storage: String,
 }
 
 impl Default for ProxyConfig {
@@ -307,6 +310,7 @@ impl Default for TlsConfig {
             root_ca_cert_path: Some("ca-certs/securly_ca.crt".to_string()),
             ca_cert_path: Some("ca-certs/rootCA.crt".to_string()),
             ca_key_path: Some("ca-certs/rootCA.key".to_string()),
+            certificate_storage: "cache".to_string(), // Default to cache storage
         }
     }
 }
