@@ -134,11 +134,21 @@ pub struct StreamingConfig {
 /// Runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    /// Runtime mode: "single_threaded" or "multi_threaded"
+    /// Runtime mode: "single_threaded", "multi_threaded", or "multi_process"
     pub mode: String,
     
     /// Number of worker threads for multi-threaded mode (0 = auto-detect CPU cores)
     pub worker_threads: Option<usize>,
+    
+    /// Number of processes for multi-process mode
+    pub process_count: Option<usize>,
+    
+    /// Current process index (0-based) - set at runtime
+    #[serde(skip)]
+    pub process_index: Option<usize>,
+    
+    /// Use SO_REUSEPORT for multi-process mode (Linux/macOS)
+    pub use_reuseport: bool,
 }
 
 /// TLS configuration for HTTPS interception
@@ -268,6 +278,9 @@ impl Default for RuntimeConfig {
         Self {
             mode: "multi_threaded".to_string(), // Default to multi-threaded for backward compatibility
             worker_threads: None, // Auto-detect CPU cores
+            process_count: None, // Default to single process
+            process_index: None, // Set at runtime
+            use_reuseport: true, // Enable SO_REUSEPORT by default on supported systems
         }
     }
 }
@@ -558,6 +571,16 @@ impl ProxyConfig {
             if let Ok(threads) = threads.parse() {
                 config.runtime.worker_threads = Some(threads);
             }
+        }
+        
+        if let Ok(processes) = std::env::var("PROXY_PROCESS_COUNT") {
+            if let Ok(processes) = processes.parse() {
+                config.runtime.process_count = Some(processes);
+            }
+        }
+        
+        if let Ok(reuseport) = std::env::var("PROXY_USE_REUSEPORT") {
+            config.runtime.use_reuseport = reuseport.to_lowercase() == "true";
         }
         
         config

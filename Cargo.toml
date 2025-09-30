@@ -10,6 +10,9 @@ tokio = { version = "1.0", features = ["full"] }
 # HTTP server and client
 hyper = { version = "0.14", features = ["full", "server", "client"] }
 
+# Socket configuration (for SO_REUSEPORT support)
+socket2 = "0.5"
+
 # Additional support for proxying
 futures = "0.3"
 bytes = "1.0"

@@ -12,6 +12,7 @@ use hyper::{Body, Request, Response, Server, StatusCode};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio_rustls::TlsAcceptor;
+use socket2::{Socket, Domain, Type};
 use tracing::{error, info, debug, warn};
 use hyper::upgrade::{Upgraded, on};
 use serde_json::json;
@@ -26,6 +27,42 @@ pub struct ProxyServer {
     client_manager: Arc<HttpClient>,
     body_handler: Arc<SmartBodyHandler>,
     tls_config: crate::config::settings::TlsConfig,
+}
+
+/// Create a socket with SO_REUSEPORT support for multi-process binding
+fn create_reusable_socket(addr: SocketAddr) -> Result<Socket> {
+    use std::env;
+    
+    let domain = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let socket = Socket::new(domain, Type::STREAM, None)?;
+    
+    // Enable SO_REUSEADDR (always good to have)
+    socket.set_reuse_address(true)?;
+    
+    // Enable SO_REUSEPORT if requested (Linux/macOS)
+    if env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true" {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            socket.set_reuse_port(true)?;
+            info!("✅ SO_REUSEPORT enabled for multi-process support");
+        }
+        
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            warn!("⚠️  SO_REUSEPORT requested but not supported on this platform");
+        }
+    }
+    
+    // Set to non-blocking
+    socket.set_nonblocking(true)?;
+    
+    // Bind to address
+    socket.bind(&addr.into())?;
+    
+    // Listen with backlog
+    socket.listen(1024)?;
+    
+    Ok(socket)
 }
 
 impl ProxyServer {
@@ -130,7 +167,31 @@ impl ProxyServer {
         });
 
         log_debug!("Creating server with service factory");
-        let server = Server::bind(&self.listen_addr).serve(make_svc);
+        
+        // Create server with SO_REUSEPORT support if needed
+        let server = if std::env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true" {
+            // Use reusable socket for multi-process support
+            let socket = create_reusable_socket(self.listen_addr)?;
+            let std_listener = std::net::TcpListener::from(socket);
+            let tokio_listener = tokio::net::TcpListener::from_std(std_listener)?;
+            
+            // Get process index for logging
+            let process_info = if let Ok(index) = std::env::var("PROXY_PROCESS_INDEX") {
+                format!(" (process {})", index)
+            } else {
+                String::new()
+            };
+            
+            info!("🔄 Server binding with SO_REUSEPORT{}", process_info);
+            log_info!("Server binding with SO_REUSEPORT{}", process_info);
+            
+            Server::builder(hyper::server::conn::AddrIncoming::from_listener(tokio_listener)?)
+                .serve(make_svc)
+        } else {
+            // Standard single-process binding
+            Server::bind(&self.listen_addr).serve(make_svc)
+        };
+        
         log_info!("Server bound successfully, waiting for connections");
 
         if let Err(e) = server.await {
