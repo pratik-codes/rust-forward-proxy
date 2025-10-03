@@ -1,5 +1,3 @@
-//! Main entry point for the Rust Forward Proxy
-
 use rust_forward_proxy::{
     init_logger_with_config,
     log_info,

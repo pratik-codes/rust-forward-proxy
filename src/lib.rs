@@ -3,7 +3,6 @@
 //! This library provides a production-grade proxy server with middleware support,
 //! comprehensive logging, and configuration management.
 
-pub mod cli;
 pub mod config;
 pub mod error;
 pub mod logging;

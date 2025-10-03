@@ -61,9 +61,6 @@ rustls-pemfile = "1.0"
 # X.509 certificate parsing
 x509-parser = "0.16"
 
-# CLI argument parsing
-clap = { version = "4.0", features = ["derive"] }
-
 # Temporary directory for testing
 tempfile = "3.5"
 
@@ -77,7 +74,3 @@ redis-support = ["redis"]
 [[bin]]
 name = "rust-forward-proxy"
 path = "src/main.rs"
-
-[[bin]]
-name = "rust-forward-proxy-cli"
-path = "src/main_cli.rs"
