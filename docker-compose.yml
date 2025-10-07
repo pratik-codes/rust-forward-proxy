@@ -40,36 +40,32 @@ services:
     container_name: rust-forward-proxy
     restart: unless-stopped
     ports:
-      - "${PROXY_PORT:-8080}:8080"
+      # Use privileged ports in Docker (host port:container port)
+      - "80:80"     # HTTP proxy port
+      - "443:443"   # HTTPS proxy port
+    privileged: true  # Required for privileged ports
     environment:
-      # Redis configuration
-      - REDIS_URL=redis://${REDIS_USERNAME:-}${REDIS_PASSWORD:+:${REDIS_PASSWORD}}@redis:6379/${REDIS_DB:-0}
-      
-      # Proxy configuration
-      - PROXY_LISTEN_ADDR=0.0.0.0:8080
+      # Minimal environment - all config comes from config.yml
       - RUST_LOG=${LOG_LEVEL:-info}
-      - PROXY_REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-30}
-      - PROXY_MAX_BODY_SIZE=${MAX_BODY_SIZE:-1048576}
-      
-      # Upstream configuration
-      - UPSTREAM_URL=${UPSTREAM_URL:-http://httpbin.org}
-      - UPSTREAM_CONNECT_TIMEOUT=${UPSTREAM_CONNECT_TIMEOUT:-5}
-      - UPSTREAM_KEEP_ALIVE_TIMEOUT=${UPSTREAM_KEEP_ALIVE_TIMEOUT:-60}
     volumes:
       - ./logs:/app/logs
+      - ./config-docker.yml:/app/config.yml:ro  # Mount Docker-specific config as read-only
+      - ./certs:/app/certs
+      - ./ca-certs:/app/ca-certs
     networks:
       - proxy-network
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:80/health", "||", "exit", "1"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 10s
-    security_opt:
-      - no-new-privileges:true
+    # Remove security restrictions for privileged ports
+    # security_opt:
+    #   - no-new-privileges:true
 
 volumes:
   redis_data:

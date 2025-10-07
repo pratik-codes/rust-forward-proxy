@@ -1,5 +1,3 @@
-//! Main entry point for the Rust Forward Proxy
-
 use rust_forward_proxy::{
     init_logger_with_config,
     log_info,
@@ -51,7 +49,7 @@ async fn async_main(config: ProxyConfig) -> anyhow::Result<()> {
             log_info!("⚠️  Clients will see certificate warnings (normal for self-signed certs)");
         }
         
-        let server = ProxyServer::with_https_interception_and_config(config.listen_addr, true, &config);
+        let server = ProxyServer::with_https_interception_and_config(config.listen_addr, true, &config)?;
         server.start().await?;
     }
 

@@ -10,6 +10,9 @@ tokio = { version = "1.0", features = ["full"] }
 # HTTP server and client
 hyper = { version = "0.14", features = ["full", "server", "client"] }
 
+# Socket configuration (for SO_REUSEPORT support)
+socket2 = "0.5"
+
 # Additional support for proxying
 futures = "0.3"
 bytes = "1.0"
@@ -58,9 +61,6 @@ rustls-pemfile = "1.0"
 # X.509 certificate parsing
 x509-parser = "0.16"
 
-# CLI argument parsing
-clap = { version = "4.0", features = ["derive"] }
-
 # Temporary directory for testing
 tempfile = "3.5"
 
@@ -74,7 +74,3 @@ redis-support = ["redis"]
 [[bin]]
 name = "rust-forward-proxy"
 path = "src/main.rs"
-
-[[bin]]
-name = "rust-forward-proxy-cli"
-path = "src/main_cli.rs"

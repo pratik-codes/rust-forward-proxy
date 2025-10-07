@@ -8,6 +8,10 @@ use anyhow::{Context, Result};
 /// Main configuration for the proxy server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
+    /// Use privileged ports (80/443) when true, regular ports (8080/8443) when false
+    #[serde(default)]
+    pub use_privileged_ports: bool,
+    
     /// Server listening address
     pub listen_addr: SocketAddr,
     
@@ -134,11 +138,21 @@ pub struct StreamingConfig {
 /// Runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    /// Runtime mode: "single_threaded" or "multi_threaded"
+    /// Runtime mode: "single_threaded", "multi_threaded", or "multi_process"
     pub mode: String,
     
     /// Number of worker threads for multi-threaded mode (0 = auto-detect CPU cores)
     pub worker_threads: Option<usize>,
+    
+    /// Number of processes for multi-process mode
+    pub process_count: Option<usize>,
+    
+    /// Current process index (0-based) - set at runtime
+    #[serde(skip)]
+    pub process_index: Option<usize>,
+    
+    /// Use SO_REUSEPORT for multi-process mode (Linux/macOS)
+    pub use_reuseport: bool,
 }
 
 /// TLS configuration for HTTPS interception
@@ -185,12 +199,16 @@ pub struct TlsConfig {
     
     /// Path to CA private key for signing domain certificates
     pub ca_key_path: Option<String>,
+    
+    /// Certificate storage backend: "cache" (in-memory) or "redis" 
+    pub certificate_storage: String,
 }
 
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
-            listen_addr: "127.0.0.1:80".parse().unwrap(),
+            use_privileged_ports: false, // Default to non-privileged ports
+            listen_addr: "127.0.0.1:8080".parse().unwrap(),
             log_level: "info".to_string(),
             upstream: UpstreamConfig::default(),
             redis: RedisConfig::default(),
@@ -268,6 +286,9 @@ impl Default for RuntimeConfig {
         Self {
             mode: "multi_threaded".to_string(), // Default to multi-threaded for backward compatibility
             worker_threads: None, // Auto-detect CPU cores
+            process_count: None, // Default to single process
+            process_index: None, // Set at runtime
+            use_reuseport: true, // Enable SO_REUSEPORT by default on supported systems
         }
     }
 }
@@ -289,6 +310,7 @@ impl Default for TlsConfig {
             root_ca_cert_path: Some("ca-certs/securly_ca.crt".to_string()),
             ca_cert_path: Some("ca-certs/rootCA.crt".to_string()),
             ca_key_path: Some("ca-certs/rootCA.key".to_string()),
+            certificate_storage: "cache".to_string(), // Default to cache storage
         }
     }
 }
@@ -299,8 +321,11 @@ impl ProxyConfig {
         let contents = std::fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read config file: {}", path.as_ref().display()))?;
         
-        let config: ProxyConfig = serde_yaml::from_str(&contents)
+        let mut config: ProxyConfig = serde_yaml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path.as_ref().display()))?;
+        
+        // Apply port configuration based on use_privileged_ports
+        config.apply_port_configuration();
         
         Ok(config)
     }
@@ -315,7 +340,7 @@ impl ProxyConfig {
             return Err(anyhow::anyhow!("Config file '{}' not found. Please ensure config.yml exists in the project root.", config_path));
         };
         
-        // Override with environment variables for development/testing
+        // Override with environment variables for development/testing (these take precedence over automatic port configuration)
         if let Ok(http_port) = std::env::var("HTTP_PROXY_PORT") {
             if let Ok(port) = http_port.parse::<u16>() {
                 config.listen_addr = format!("127.0.0.1:{}", port).parse().unwrap();
@@ -329,6 +354,20 @@ impl ProxyConfig {
         }
         
         Ok(config)
+    }
+    
+    /// Apply port configuration based on use_privileged_ports setting
+    /// This will override the ports in the configuration based on the use_privileged_ports flag
+    pub fn apply_port_configuration(&mut self) {
+        if self.use_privileged_ports {
+            // Use privileged ports (80/443) - requires sudo
+            self.listen_addr = "127.0.0.1:80".parse().unwrap();
+            self.tls.https_listen_addr = "127.0.0.1:443".parse().unwrap();
+        } else {
+            // Use regular ports (8080/8443) - no sudo required  
+            self.listen_addr = "127.0.0.1:8080".parse().unwrap();
+            self.tls.https_listen_addr = "127.0.0.1:8443".parse().unwrap();
+        }
     }
     
     /// Legacy function to load configuration from environment variables
@@ -558,6 +597,16 @@ impl ProxyConfig {
             if let Ok(threads) = threads.parse() {
                 config.runtime.worker_threads = Some(threads);
             }
+        }
+        
+        if let Ok(processes) = std::env::var("PROXY_PROCESS_COUNT") {
+            if let Ok(processes) = processes.parse() {
+                config.runtime.process_count = Some(processes);
+            }
+        }
+        
+        if let Ok(reuseport) = std::env::var("PROXY_USE_REUSEPORT") {
+            config.runtime.use_reuseport = reuseport.to_lowercase() == "true";
         }
         
         config

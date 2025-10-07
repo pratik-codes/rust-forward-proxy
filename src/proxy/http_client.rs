@@ -53,9 +53,22 @@ pub struct ClientConfig {
 
 impl Default for ClientConfig {
     fn default() -> Self {
+        // Check if we're in multi-process mode for load balancing optimization
+        let is_multi_process = std::env::var("PROXY_RUNTIME_MODE").unwrap_or_default() == "single_threaded"
+            && std::env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true";
+        
+        // For multi-process mode, use more aggressive connection cycling for better load balancing
+        let (max_idle_per_host, idle_timeout) = if is_multi_process {
+            // Reduce connection pooling in multi-process mode to improve load distribution
+            (10, Duration::from_secs(15))
+        } else {
+            // Use standard settings for single-process mode
+            (50, Duration::from_secs(90))
+        };
+        
         Self {
-            max_idle_per_host: 50,
-            idle_timeout: Duration::from_secs(90),
+            max_idle_per_host,
+            idle_timeout,
             connect_timeout: Duration::from_secs(10),
             enable_http2: true,
             http2_initial_stream_window_size: Some(2097152), // 2MB for better throughput
@@ -77,6 +90,9 @@ impl HttpClient {
 
     /// Create a new optimized HTTP client with custom configuration
     pub fn with_config(config: ClientConfig) -> Self {
+        let is_multi_process = std::env::var("PROXY_RUNTIME_MODE").unwrap_or_default() == "single_threaded"
+            && std::env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true";
+        
         info!("🚀 Initializing advanced HTTP client with connection pooling");
         info!("   Max idle connections per host: {}", config.max_idle_per_host);
         info!("   Idle timeout: {:?}", config.idle_timeout);
@@ -86,6 +102,10 @@ impl HttpClient {
         info!("   HTTP/2 connection window: {} bytes", config.http2_initial_connection_window_size.unwrap_or(0));
         info!("   HTTP/2 keep-alive interval: {:?}", config.http2_keep_alive_interval);
         info!("   TCP keepalive enabled: {}", config.tcp_keepalive);
+        
+        if is_multi_process {
+            info!("   🔄 Multi-process load balancing mode: aggressive connection cycling enabled");
+        }
 
         // Create HTTPS connector with optimized settings
         // Temporarily disable HTTP/2 to fix 400 errors with some servers like Google

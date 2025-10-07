@@ -2,6 +2,7 @@
 
 use crate::models::{ProxyLog, RequestData, ResponseData};
 use crate::{log_debug, log_proxy_transaction};
+use crate::logging::process_info;
 use hyper::StatusCode;
 use std::net::SocketAddr;
 use tracing::info;
@@ -15,10 +16,10 @@ pub fn log_incoming_request(method: &str, uri: &str, remote_addr: &SocketAddr) {
         log_debug!("🔍 CONNECT DETAILS:\n  Method: {}\n  URI: {}\n  Remote: {}", 
                    method, uri, remote_addr);
     } else {
-        // HTTP/HTTPS requests at INFO level
-        info!("📥 {} {} from {}", method, uri, remote_addr.ip());
-        log_debug!("🔍 REQUEST DETAILS:\n  Method: {}\n  URI: {}\n  Remote: {}", 
-                   method, uri, remote_addr);
+        // HTTP/HTTPS requests at INFO level with process info
+        info!("{} 📥 {} {} from {}", process_info(), method, uri, remote_addr.ip());
+        log_debug!("{} 🔍 REQUEST DETAILS:\n  Method: {}\n  URI: {}\n  Remote: {}", 
+                   process_info(), method, uri, remote_addr);
     }
 }
 
@@ -78,32 +79,34 @@ pub fn create_connect_transaction(
 
 /// Log HTTP request success
 pub fn log_http_success(method: &str, path: &str, status: StatusCode, total_time: u128) {
-    // Clean INFO log for successful HTTP request
-    info!("✅ {} {} → {} ({}ms)", method, 
+    let current_pid = std::process::id();
+    // Clean INFO log for successful HTTP request with process info
+    info!("✅ PID {} completed {} {} → {} ({}ms)", current_pid, method, 
           path.chars().take(50).collect::<String>(), 
           status, total_time);
     
     // Verbose DEBUG log
-    log_debug!("✅ HTTP SUCCESS:\n  Method: {}\n  Path: {}\n  Status: {}\n  Time: {}ms", 
-              method, path, status, total_time);
+    log_debug!("✅ HTTP SUCCESS (PID {}):\n  Method: {}\n  Path: {}\n  Status: {}\n  Time: {}ms", 
+              current_pid, method, path, status, total_time);
     
     // Separator for INFO mode
-    info!("##################################\n");
+    info!("PID {} ##################################\n", current_pid);
 }
 
 /// Log HTTP request failure
 pub fn log_http_failure(method: &str, path: &str, total_time: u128, error: &anyhow::Error) {
+    let current_pid = std::process::id();
     // Clean INFO log for failed HTTP request
-    info!("❌ {} {} → ERROR ({}ms): {}", method, 
+    info!("❌ PID {} failed {} {} → ERROR ({}ms): {}", current_pid, method, 
           path.chars().take(50).collect::<String>(), 
           total_time, error);
     
     // Verbose DEBUG log
-    log_debug!("❌ HTTP FAILURE:\n  Method: {}\n  Path: {}\n  Time: {}ms\n  Error: {}", 
-              method, path, total_time, error);
+    log_debug!("❌ HTTP FAILURE (PID {}):\n  Method: {}\n  Path: {}\n  Time: {}ms\n  Error: {}", 
+              current_pid, method, path, total_time, error);
     
     // Separator for INFO mode
-    info!("##################################\n");
+    info!("PID {} ##################################\n", current_pid);
 }
 
 /// Log forwarding request details

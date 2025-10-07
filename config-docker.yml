@@ -1,0 +1,73 @@
+# Docker-specific Rust Forward Proxy Configuration
+# This file is used when running in Docker containers
+# Docker always uses privileged ports (80/443)
+
+# Basic proxy server settings
+# Docker runs with privileged ports (80/443)
+use_privileged_ports: true
+listen_addr: "0.0.0.0:8080"   # Will be overridden to 80 by use_privileged_ports
+log_level: "info"
+request_timeout: 30  # seconds
+max_body_size: 1048576  # 1MB in bytes
+
+# Upstream server configuration
+upstream:
+  url: "http://localhost:3000"
+  connect_timeout: 5  # seconds
+  keep_alive_timeout: 60  # seconds
+
+# Redis configuration
+redis:
+  url: "redis://redis:6379"
+  pool_size: 10
+  connection_timeout: 5  # seconds
+  command_timeout: 10  # seconds
+
+# TLS/HTTPS configuration
+tls:
+  enabled: true
+  https_listen_addr: "0.0.0.0:8443"   # Will be overridden to 443 by use_privileged_ports
+  cert_path: "certs/proxy.crt"
+  key_path: "certs/proxy.key"
+  interception_enabled: true
+  auto_generate_cert: true
+  cert_organization: "Rust Forward Proxy"
+  cert_common_name: "proxy.local"
+  cert_validity_days: 365
+  min_tls_version: "1.2"
+  skip_upstream_cert_verify: false
+  root_ca_cert_path: "ca-certs/securly_ca.crt"
+  ca_cert_path: "ca-certs/rootCA.crt"
+  ca_key_path: "ca-certs/rootCA.key"
+
+# Logging configuration
+logging:
+  enable_file_logging: true
+
+# HTTP client configuration for connection pooling and optimization
+http_client:
+  max_idle_per_host: 50
+  idle_timeout_secs: 90
+  connect_timeout_secs: 10
+  enable_http2: true
+  http2_stream_window_size: 2097152  # 2MB
+  http2_connection_window_size: 8388608  # 8MB
+  http2_keepalive_interval_secs: 30
+  http2_keepalive_timeout_secs: 10
+  http2_max_concurrent_streams: 100
+  tcp_keepalive: true
+  tcp_keepalive_interval_secs: 30
+
+# Response and request streaming configuration
+streaming:
+  max_log_body_size: 1048576  # 1MB
+  max_partial_log_size: 1024  # 1KB
+  enable_response_streaming: true
+  enable_request_streaming: false
+
+# Runtime Configuration - Multi-Process Mode (4 single-threaded processes)
+runtime:
+  mode: "multi_process"           # Run 4 separate single-threaded processes
+  worker_threads: null            # Not used in multi_process mode
+  process_count: 4                # Number of single-threaded processes to spawn
+  use_reuseport: true             # Enable SO_REUSEPORT for load distribution

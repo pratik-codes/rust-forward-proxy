@@ -12,6 +12,7 @@ use hyper::{Body, Request, Response, Server, StatusCode};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio_rustls::TlsAcceptor;
+use socket2::{Socket, Domain, Type};
 use tracing::{error, info, debug, warn};
 use hyper::upgrade::{Upgraded, on};
 use serde_json::json;
@@ -28,35 +29,73 @@ pub struct ProxyServer {
     tls_config: crate::config::settings::TlsConfig,
 }
 
+/// Create a socket with SO_REUSEPORT support for multi-process binding
+fn create_reusable_socket(addr: SocketAddr) -> Result<Socket> {
+    use std::env;
+    
+    let domain = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let socket = Socket::new(domain, Type::STREAM, None)?;
+    
+    // Enable SO_REUSEADDR (always good to have)
+    socket.set_reuse_address(true)?;
+    
+    // Enable SO_REUSEPORT if requested (Linux/macOS)
+    if env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true" {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            socket.set_reuse_port(true)?;
+            info!("✅ SO_REUSEPORT enabled for multi-process support");
+        }
+        
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            warn!("⚠️  SO_REUSEPORT requested but not supported on this platform");
+        }
+    }
+    
+    // Set to non-blocking
+    socket.set_nonblocking(true)?;
+    
+    // Bind to address
+    socket.bind(&addr.into())?;
+    
+    // Listen with backlog
+    socket.listen(1024)?;
+    
+    Ok(socket)
+}
+
 impl ProxyServer {
     /// Create a new proxy server with configuration
     /// This is the recommended way to create a proxy server
-    pub fn with_config(listen_addr: SocketAddr, config: &crate::config::settings::ProxyConfig) -> Self {
-        Self { 
+    pub fn with_config(listen_addr: SocketAddr, config: &crate::config::settings::ProxyConfig) -> Result<Self> {
+        let cert_manager = Arc::new(CertificateManager::with_config(&config.tls, &config.redis)?);
+        
+        Ok(Self { 
             listen_addr,
             https_interception: false, // Default to false for backward compatibility
-            cert_manager: Arc::new(CertificateManager::new()),
+            cert_manager,
             client_manager: Arc::new(HttpClient::from_config(&config.http_client)),
             body_handler: Arc::new(SmartBodyHandler::from_config(&config.streaming)),
             tls_config: config.tls.clone(),
-        }
+        })
     }
 
     /// Create a new proxy server with HTTPS interception and configuration
     /// This is the recommended way to create a proxy server with HTTPS interception
-    pub fn with_https_interception_and_config(listen_addr: SocketAddr, enable_interception: bool, config: &crate::config::settings::ProxyConfig) -> Self {
-        let cert_manager = Arc::new(CertificateManager::new());
+    pub fn with_https_interception_and_config(listen_addr: SocketAddr, enable_interception: bool, config: &crate::config::settings::ProxyConfig) -> Result<Self> {
+        let cert_manager = Arc::new(CertificateManager::with_config(&config.tls, &config.redis)?);
         let client_manager = Arc::new(HttpClient::from_config(&config.http_client));
         let body_handler = Arc::new(SmartBodyHandler::from_config(&config.streaming));
         
-        Self {
+        Ok(Self {
             listen_addr,
             https_interception: enable_interception,
             cert_manager,
             client_manager,
             body_handler,
             tls_config: config.tls.clone(),
-        }
+        })
     }
 
     /// Create a new proxy server (legacy method)
@@ -115,6 +154,14 @@ impl ProxyServer {
             let body_handler = Arc::clone(&body_handler);
             let tls_config = tls_config.clone();
             log_debug!("New connection from: {}", remote_addr);
+            
+            // Check if we're in multi-process mode for load balancing
+            let is_multi_process = std::env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true";
+            let request_counter = if is_multi_process {
+                Some(Arc::new(std::sync::atomic::AtomicU32::new(0)))
+            } else {
+                None
+            };
 
             async move { 
                 Ok::<_, Infallible>(service_fn(move |req| {
@@ -122,15 +169,56 @@ impl ProxyServer {
                     let client_manager = Arc::clone(&client_manager);
                     let body_handler = Arc::clone(&body_handler);
                     let tls_config = tls_config.clone();
+                    let request_counter = request_counter.clone();
+                    
                     async move {
-                        handle_request(req, remote_addr, https_interception, cert_manager, client_manager, body_handler, &tls_config).await
+                        let response = handle_request(req, remote_addr, https_interception, cert_manager, client_manager, body_handler, &tls_config).await;
+                        
+                        // In multi-process mode, close connection after handling several requests
+                        // to force load balancing across processes
+                        if let Some(counter) = &request_counter {
+                            let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // Close connection after 20-50 requests (randomized to prevent thundering herd)
+                            let max_requests = 20 + (count % 30); // Random between 20-49 requests
+                            if count > max_requests {
+                                let mut response = response?;
+                                response.headers_mut().insert("Connection", "close".parse().unwrap());
+                                return Ok(response);
+                            }
+                        }
+                        
+                        response
                     }
                 })) 
             }
         });
 
         log_debug!("Creating server with service factory");
-        let server = Server::bind(&self.listen_addr).serve(make_svc);
+        
+        // Create server with SO_REUSEPORT support if needed
+        let server = if std::env::var("PROXY_USE_REUSEPORT").unwrap_or_default() == "true" {
+            // Use reusable socket for multi-process support
+            let socket = create_reusable_socket(self.listen_addr)?;
+            let std_listener = std::net::TcpListener::from(socket);
+            let tokio_listener = tokio::net::TcpListener::from_std(std_listener)?;
+            
+            // Get process index for logging
+            let process_info = if let Ok(index) = std::env::var("PROXY_PROCESS_INDEX") {
+                format!(" (process {})", index)
+            } else {
+                String::new()
+            };
+            
+            info!("🔄 Server binding with SO_REUSEPORT{} - load balancing enabled", process_info);
+            log_info!("Server binding with SO_REUSEPORT{} - load balancing enabled", process_info);
+            
+            Server::builder(hyper::server::conn::AddrIncoming::from_listener(tokio_listener)?)
+                .serve(make_svc)
+        } else {
+            // Standard single-process binding
+            Server::bind(&self.listen_addr).serve(make_svc)
+        };
+        
         log_info!("Server bound successfully, waiting for connections");
 
         if let Err(e) = server.await {
@@ -156,7 +244,10 @@ pub async fn handle_request(
     let method = req.method().to_string();
     let uri = req.uri().to_string();
 
-    // Log incoming request
+    // Log incoming request with current process PID
+    let current_pid = std::process::id();
+    info!("🎯 REQUEST HANDLER: PID {} processing {} {} from {}", 
+          current_pid, method, uri, remote_addr.ip());
     log_incoming_request(&method, &uri, &remote_addr);
 
     // Handle health check endpoint locally (don't forward to upstream)
@@ -192,6 +283,7 @@ async fn handle_health_check(
     method: String,
     start_time: std::time::Instant,
 ) -> Result<Response<Body>, Infallible> {
+    let current_pid = std::process::id();
     let elapsed_time = start_time.elapsed().as_millis();
     
     if method == "GET" {
@@ -201,7 +293,8 @@ async fn handle_health_check(
             "service": "rust-forward-proxy",
             "timestamp": chrono::Utc::now().to_rfc3339(),
             "uptime_ms": elapsed_time,
-            "version": env!("CARGO_PKG_VERSION")
+            "version": env!("CARGO_PKG_VERSION"),
+            "pid": current_pid
         });
         
         let response = Response::builder()
@@ -211,7 +304,7 @@ async fn handle_health_check(
             .body(Body::from(health_data.to_string()))
             .unwrap();
             
-        log_info!("✅ GET /health → 200 OK ({}ms)", elapsed_time);
+        log_info!("✅ GET /health → 200 OK ({}ms) - handled by PID {}", elapsed_time, current_pid);
         Ok(response)
     } else {
         // Health endpoint only supports GET
@@ -415,7 +508,9 @@ async fn handle_intercepted_request(
         format!("https://{}:{}{}", host, port, uri)
     };
     
-    info!("🔍 INTERCEPTED HTTPS: {} {} (decrypted from {}:{})", method, full_url, host, port);
+    let current_pid = std::process::id();
+    info!("🔍 INTERCEPTED HTTPS: PID {} handling {} {} (decrypted from {}:{})", 
+          current_pid, method, full_url, host, port);
     info!("⏱️  Request started at: {:?}", start_time);
     
     // Log request headers in structured format
@@ -667,7 +762,8 @@ async fn handle_http_request(
     client_manager: Arc<HttpClient>,
     body_handler: Arc<SmartBodyHandler>,
 ) -> Result<Response<Body>, Infallible> {
-    info!("🔍 Processing HTTP request with full interception");
+    let current_pid = std::process::id();
+    info!("🔍 Processing HTTP request with full interception - PID {}", current_pid);
     info!("⏱️  Request started at: {:?}", start_time);
     
     let prep_time = start_time.elapsed();
